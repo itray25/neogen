@@ -1,0 +1,9 @@
+/frontend/dist
+/.cargo/.build
+/.cargo/tmp
+.env*
+!.env.example
+build-log*.txt
+.DS_Store
+/.idea/
+target
