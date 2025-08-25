@@ -32,6 +32,9 @@ create-rust-app = {version="11.0.1", default-features = false, features=["plugin
 serde_json = "1"
 simple_logger = "5.0"
 tsync = "3"
+actix = "0.13.5"
+actix-web-actors = "4.3.1"
+rand = "0.9.2"
 
 [dependencies.chrono]
 features = ["serde"]
@@ -61,5 +64,17 @@ name = "neogen"
 publish = false
 version = "0.1.0"
 
+# 开发模式优化
 [profile.dev]
 debug-assertions = true
+opt-level = 1        # 轻度优化，平衡编译速度和运行速度
+debug = true         # 保留调试信息
+incremental = true   # 增量编译
+
+# 依赖项优化编译
+[profile.dev.package."*"]
+opt-level = 2        # 对依赖项进行优化
+
+# 并行编译
+[build]
+jobs = 4            # 根据您的CPU核心数调整
