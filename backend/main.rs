@@ -1,11 +1,12 @@
 extern crate diesel;
-
 use actix_files::Files;
 use actix_web::{App, HttpServer, web};
 use actix_web::middleware::{Compress, Logger, TrailingSlash, NormalizePath};
 use actix_web::web::Data;
 use create_rust_app::AppConfig;
 use crate::services::ws;
+// 导入用户服务的 DbPool 类型
+use crate::services::user::DbPool;
 mod schema;
 mod services;
 mod models;
@@ -16,6 +17,18 @@ async fn main() -> std::io::Result<()> {
     let app_data = create_rust_app::setup();
     let game_server = ws::create_game_server();
     simple_logger::init_with_env().unwrap();
+    
+    // 创建用户服务专用的 SQLite 连接池
+    use diesel::r2d2::{self, ConnectionManager};
+    use diesel::sqlite::SqliteConnection;
+    
+    let database_url = std::env::var("DATABASE_URL")
+        .unwrap_or_else(|_| "sqlite://database.db".to_string());
+    
+    let manager = ConnectionManager::<SqliteConnection>::new(database_url);
+    let user_db_pool: DbPool = r2d2::Pool::builder()
+        .build(manager)
+        .expect("Failed to create user database pool");
     
     HttpServer::new(move || {
         let mut app = App::new()
@@ -28,10 +41,16 @@ async fn main() -> std::io::Result<()> {
             app_url: std::env::var("APP_URL").unwrap(),
         }));
         app = app.app_data(Data::new(game_server.clone()));
+        
+        // 添加用户服务专用的数据库连接池
+        app = app.app_data(Data::new(user_db_pool.clone()));
 
         // API 路由
         let mut api_scope = web::scope("/api");
-        api_scope = api_scope.service(services::todo::endpoints(web::scope("/todos")));
+        // 使用 endpoints 函数来注册用户路由
+        api_scope = api_scope.service(
+            web::scope("/users").configure(services::user::endpoints)
+        );
         app = app.service(api_scope);
         
         // WebSocket 路由

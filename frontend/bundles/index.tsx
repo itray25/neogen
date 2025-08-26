@@ -6,15 +6,14 @@ import { BrowserRouter } from "react-router-dom";
 import { ChakraProvider, defaultSystem } from "@chakra-ui/react";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    {/* CRA: Wrap */}
-    <BrowserRouter>
-      <ChakraProvider value={defaultSystem}>
-        <App />
-      </ChakraProvider>
-    </BrowserRouter>
-    {/* CRA: Unwrap */}
-  </React.StrictMode>
+  // 暂时注释掉StrictMode以避免开发环境的重复API调用
+  // <React.StrictMode>
+  <BrowserRouter>
+    <ChakraProvider value={defaultSystem}>
+      <App />
+    </ChakraProvider>
+  </BrowserRouter>
+  // </React.StrictMode>
 );
 
 // If you want to start measuring performance in your app, pass a function
