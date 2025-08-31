@@ -20,11 +20,18 @@ use std::{io::Write, process::Command};
 fn shell(command: &str) {
     // println!("build.rs => {}", command);
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .output()
-        .expect(format!("Failed to run {cmd}", cmd = command).as_str());
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(&["/C", command])
+            .output()
+            .expect(format!("Failed to run {cmd}", cmd = command).as_str())
+    } else {
+        Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .output()
+            .expect(format!("Failed to run {cmd}", cmd = command).as_str())
+    };
 
     // println!("build.rs => {:?}", output.stdout);
     let mut file =

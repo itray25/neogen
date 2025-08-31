@@ -1,7 +1,6 @@
 use actix_web::{web, get, post, HttpResponse};
 use diesel::prelude::*;
 use crate::models::user::{User, NewUser,UserInput};
-use crate::schema::users::dsl::*;
 use diesel::r2d2::{self, ConnectionManager};
 use diesel::sqlite::SqliteConnection;
 use serde::Deserialize;
@@ -24,7 +23,7 @@ pub async fn create_user(
         let mut conn = pool.get().expect("couldn't get db connection from pool");
         
         // 首先检查user_id是否已存在
-        match users.filter(crate::schema::users::id.eq(&user_input.user_id)).first::<User>(&mut conn) {
+        match crate::schema::users::table.filter(crate::schema::users::id.eq(&user_input.user_id)).first::<User>(&mut conn) {
             Ok(_) => {
                 return Err(diesel::result::Error::DatabaseError(
                     diesel::result::DatabaseErrorKind::UniqueViolation,
@@ -46,7 +45,7 @@ pub async fn create_user(
         }
         
         // 检查username是否已存在
-        match users.filter(crate::schema::users::username.eq(&user_input.username)).first::<User>(&mut conn) {
+        match crate::schema::users::table.filter(crate::schema::users::username.eq(&user_input.username)).first::<User>(&mut conn) {
             Ok(_) => {
                 return Err(diesel::result::Error::DatabaseError(
                     diesel::result::DatabaseErrorKind::UniqueViolation,
@@ -65,7 +64,7 @@ pub async fn create_user(
             username: &user_input.username,
         };
 
-        diesel::insert_into(users)
+        diesel::insert_into(crate::schema::users::table)
             .values(&new_user)
             .get_result::<User>(&mut conn)
     })
@@ -124,7 +123,7 @@ pub async fn get_user(
 
     let user = web::block(move || {
         let mut conn = pool.get().expect("couldn't get db connection from pool");
-        users.filter(crate::schema::users::id.eq(user_id)).first::<User>(&mut conn)
+        crate::schema::users::table.filter(crate::schema::users::id.eq(user_id)).first::<User>(&mut conn)
     })
     .await?;
 

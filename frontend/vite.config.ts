@@ -8,9 +8,16 @@ const buildRollupInput = (isDevelopment): { [entryAlias: string]: string } => {
     ? {
         "dev.tsx": resolve(__dirname, "./src/dev.tsx"),
       }
-    : {};
+    : {
+        index: resolve(__dirname, "./index.html"),
+      };
 
   // TODO: use import.meta.glob() + npm uninstall glob
+
+  if (!isDevelopment) {
+    // In production mode, we already have the main entry point
+    return rollupInput;
+  }
 
   glob
     .sync(resolve(__dirname, "./bundles/**/*.tsx"))
@@ -29,10 +36,10 @@ const buildRollupInput = (isDevelopment): { [entryAlias: string]: string } => {
 
 // https://vitejs.dev/config/
 export default defineConfig(async ({ command, mode }) => {
-  const tsconfigPaths = await import("vite-tsconfig-paths");
+  const { default: tsconfigPaths } = await import("vite-tsconfig-paths");
 
-  return {
-    base: command === "serve" ? "http://localhost:21012" : "/",
+  const config = {
+    base: "/",
     clearScreen: false,
     build: {
       manifest: true,
@@ -45,11 +52,18 @@ export default defineConfig(async ({ command, mode }) => {
       // See `dev.tsx` which is included in development.
       "import.meta.env.DEV_SERVER_PORT": String(process.env.DEV_SERVER_PORT),
     },
-    plugins: [react(), tsconfigPaths.default()],
+    plugins: [react(), tsconfigPaths()],
 
     server: {
       port: 21012,
       host: "0.0.0.0",
+      cors: true,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers":
+          "Origin, X-Requested-With, Content-Type, Accept, Authorization",
+      },
       proxy: {
         // with options
         "/api": {
@@ -63,4 +77,6 @@ export default defineConfig(async ({ command, mode }) => {
       },
     },
   };
+
+  return config;
 });

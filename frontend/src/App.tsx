@@ -1,16 +1,22 @@
 import React from "react";
 import { Routes, Route, Link, useLocation } from "react-router-dom";
-import { Box, HStack, Text, Button } from "@chakra-ui/react";
+import { Box, HStack, Text, Button, Badge } from "@chakra-ui/react";
 import { Toaster } from "@/components/ui/toaster";
 import { Home } from "./containers/Home";
 import Room from "./containers/Room";
+import RoomPage from "./containers/RoomPage";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { AuthGuard } from "./components/AuthGuard";
+import { useAuthenticatedWebSocket } from "./hooks/useAuthenticatedWebSocket";
+import GlobalChat from "./components/GlobalChat";
 import "./App.css";
 
 const AppContent = () => {
   const location = useLocation();
   const { user, isAuthenticated, logout } = useAuth();
+
+  // 在应用级别初始化认证WebSocket连接
+  useAuthenticatedWebSocket();
 
   const handleLogout = () => {
     logout();
@@ -21,9 +27,14 @@ const AppContent = () => {
       {/* 导航栏 */}
       <Box borderBottomWidth={1} p={4} bg="gray.50">
         <HStack justify="space-between">
-          <Text fontSize="xl" fontWeight="bold">
-            NeoGen 游戏
-          </Text>
+          <Box>
+            <Text fontSize="xl" fontWeight="bold">
+              NextGen 游戏
+            </Text>
+            <Badge size="sm" colorPalette={"purple"} variant="solid">
+              Nightly
+            </Badge>
+          </Box>
           <HStack gap={4}>
             <Link to="/">
               <Box
@@ -93,10 +104,21 @@ const AppContent = () => {
             </AuthGuard>
           }
         />
+        <Route
+          path="/rooms/:roomId"
+          element={
+            <AuthGuard>
+              <RoomPage />
+            </AuthGuard>
+          }
+        />
       </Routes>
 
       {/* 全局提示框 */}
       <Toaster />
+
+      {/* 全局聊天组件 */}
+      <GlobalChat />
     </Box>
   );
 };
