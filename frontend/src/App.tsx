@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Home } from "./containers/Home";
 import Room from "./containers/Room";
 import RoomPage from "./containers/RoomPage";
+import GamePage from "./containers/GamePage";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { AuthGuard } from "./components/AuthGuard";
 import { useAuthenticatedWebSocket } from "./hooks/useAuthenticatedWebSocket";
@@ -32,7 +33,7 @@ const AppContent = () => {
               NextGen 游戏
             </Text>
             <Badge size="sm" colorPalette={"purple"} variant="solid">
-              Nightly
+              Alpha v0.2.1
             </Badge>
           </Box>
           <HStack gap={4}>
@@ -109,6 +110,14 @@ const AppContent = () => {
           element={
             <AuthGuard>
               <RoomPage />
+            </AuthGuard>
+          }
+        />
+        <Route
+          path="/rooms/:roomId/game"
+          element={
+            <AuthGuard>
+              <GamePage />
             </AuthGuard>
           }
         />

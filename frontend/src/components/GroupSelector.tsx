@@ -21,15 +21,15 @@ interface GroupSelectorProps {
 // 组名称和颜色映射
 const getGroupInfo = (id: number) => {
   const groupMap = {
-    0: { name: "红队", color: "#9E4B56" },
-    1: { name: "蓝队", color: "#556C8B" },
-    2: { name: "绿队", color: "#4D7966" },
-    3: { name: "黄队", color: "#B89B59" },
-    4: { name: "紫队", color: "#655A7F" },
-    5: { name: "青队", color: "	#3F7876" },
-    6: { name: "橙队", color: "#B37D5C" },
-    7: { name: "粉队", color: "#B87B8B" },
-    8: { name: "观众", color: "#888888" },
+    0: { name: "红队", color: "#D46A6A" }, // 更加温暖的红，减少灰色调
+    1: { name: "蓝队", color: "#6B8EC6" }, // 更明亮的蓝色，减少灰色
+    2: { name: "绿队", color: "#5D9B7E" }, // 更清新的绿色
+    3: { name: "黄队", color: "#D4B668" }, // 更明亮的黄色
+    4: { name: "紫队", color: "#8A7CC2" }, // 更鲜艳的紫色
+    5: { name: "青队", color: "#5BA4A2" }, // 更清晰的水青色
+    6: { name: "橙队", color: "#D49A6A" }, // 更温暖的橙色
+    7: { name: "粉队", color: "#D490A5" }, // 更粉嫩的颜色
+    8: { name: "观众", color: "#9E9E9E" }, // 稍微深一点的灰色，增加可读性
   };
   return (
     groupMap[id as keyof typeof groupMap] || { name: "未知", color: "#000000" }
@@ -57,7 +57,9 @@ export const GroupSelector: React.FC<GroupSelectorProps> = ({
           return (
             <GridItem key={group.id}>
               <Button
-                onClick={() => onGroupChange(group.id)}
+                onClick={() => {
+                  if (!isCurrentGroup) onGroupChange(Number(group.id));
+                }}
                 disabled={disabled}
                 variant={isCurrentGroup ? "solid" : "outline"}
                 colorScheme={isCurrentGroup ? "blue" : "gray"}

@@ -21,6 +21,7 @@ import { wsManager } from "../hooks/wsManager";
 import { toaster } from "@/components/ui/toaster";
 import { PasswordPrompt } from "../components/PasswordPrompt";
 import { GroupSelector } from "../components/GroupSelector";
+import { ForceStartButton } from "../components/ForceStartButton";
 import type { ChatMessage, GroupInfo } from "../hooks/wsManager";
 
 interface PlayerInfo {
@@ -39,6 +40,7 @@ interface RoomInfo {
   force_start_players: string[];
   required_to_start: number;
   groups?: { [key: number]: GroupInfo }; // 新增：房间分组信息
+  max_players?: number; // 可选的最大玩家数
 }
 
 const RoomPage: React.FC = () => {
@@ -49,7 +51,7 @@ const RoomPage: React.FC = () => {
 
   // 使用普通的WebSocket hook，不重复建立连接
   const { gameState } = useWebSocket();
-
+  const [hasForceStarted, toggleHasForceStarted] = useState(false);
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [players, setPlayers] = useState<PlayerInfo[]>([]);
   const [connected, setConnected] = useState(gameState.isConnected);
@@ -111,6 +113,7 @@ const RoomPage: React.FC = () => {
                   : [],
                 required_to_start: message.required_to_start || 0,
                 groups: message.groups || {}, // 新增：分组信息
+                max_players: message.max_players || 16, // 默认最大玩家数为16
               };
               setRoomInfo(roomData);
 
@@ -125,8 +128,8 @@ const RoomPage: React.FC = () => {
                 );
                 setPlayers(playerList);
               }
-              break;
             }
+            break;
           case "chat_message":
             // 聊天消息已经由wsManager处理，这里不需要额外处理
             break;
@@ -182,6 +185,30 @@ const RoomPage: React.FC = () => {
               message.message === "房间不存在"
             ) {
               navigate("/room");
+            }
+            break;
+
+          case "start_game":
+            // 游戏开始事件 - 跳转到游戏页面
+            if (message.room_id == roomId) {
+              toaster.create({
+                title: "游戏开始",
+                description: "正在跳转到游戏页面...",
+                type: "success",
+              });
+              // 跳转到游戏页面
+              navigate(`/rooms/${roomId}/game`);
+            }
+            break;
+
+          case "end_game":
+            // 游戏结束事件（在游戏页面处理，这里主要用于房间状态更新）
+            if (message.room_id == roomId) {
+              // 重新请求房间信息以更新状态
+              wsManager.send({
+                type: "get_room_info",
+                room_id: roomId,
+              });
             }
             break;
         }
@@ -242,12 +269,12 @@ const RoomPage: React.FC = () => {
   };
 
   // 设置管理员
-  const setAdmin = (targetPlayerId: string) => {
+  const setAdmin = (targetPlayerName: string) => {
     if (user && roomId) {
       wsManager.send({
         type: "set_admin",
         room_id: roomId,
-        target_player_id: targetPlayerId,
+        target_player_name: targetPlayerName,
       });
     }
   };
@@ -263,12 +290,34 @@ const RoomPage: React.FC = () => {
   };
 
   // 踢出玩家
-  const kickPlayer = (targetPlayerId: string) => {
+  const kickPlayer = (targetPlayerName: string) => {
     if (user && roomId) {
       wsManager.send({
         type: "kick_player",
         room_id: roomId,
-        target_player_id: targetPlayerId,
+        target_player_name: targetPlayerName,
+      });
+    }
+  };
+
+  // 强制开始游戏
+  const handleForceStart = () => {
+    if (user && roomId) {
+      wsManager.send({
+        type: "force_start",
+        room_id: roomId,
+        player_id: user.username,
+      });
+    }
+  };
+
+  // 取消强制开始
+  const handleCancelForceStart = () => {
+    if (user && roomId) {
+      wsManager.send({
+        type: "de_force_start",
+        room_id: roomId,
+        player_id: user.username,
       });
     }
   };
@@ -313,7 +362,8 @@ const RoomPage: React.FC = () => {
                     {roomInfo?.status || "未知"}
                   </Badge>
                   <Text fontSize="sm" color="gray.600">
-                    {roomInfo?.player_count || players.length}/16 玩家
+                    {roomInfo?.player_count || players.length}/
+                    {roomInfo?.max_players || 16} 玩家
                   </Text>
                 </HStack>
               </Box>
@@ -416,6 +466,28 @@ const RoomPage: React.FC = () => {
 
         {/* 侧边栏 */}
         <VStack align="stretch" minW="300px" gap={4}>
+          {/* 强制开始组件 */}
+          <Card.Root>
+            <Card.Header>
+              <Heading size="md">游戏控制</Heading>
+            </Card.Header>
+            <Card.Body>
+              <ForceStartButton
+                isForceStarted={
+                  user?.username
+                    ? roomInfo?.force_start_players?.includes(user.username) ||
+                      false
+                    : false
+                }
+                forceStartCount={roomInfo?.force_start_players?.length || 0}
+                requiredToStart={roomInfo?.required_to_start || 0}
+                onForceStart={handleForceStart}
+                onCancelForceStart={handleCancelForceStart}
+                disabled={!connected || roomInfo?.status === "playing"}
+              />
+            </Card.Body>
+          </Card.Root>
+
           {/* 分组选择器 */}
           <Card.Root>
             <Card.Header>
@@ -481,7 +553,7 @@ const RoomPage: React.FC = () => {
                             size="xs"
                             variant="outline"
                             colorPalette="green"
-                            onClick={() => setAdmin(player.user_id)}
+                            onClick={() => setAdmin(player.username)}
                           >
                             设为管理员
                           </Button>
@@ -510,7 +582,7 @@ const RoomPage: React.FC = () => {
                             size="xs"
                             variant="outline"
                             colorPalette="red"
-                            onClick={() => kickPlayer(player.user_id)}
+                            onClick={() => kickPlayer(player.username)}
                           >
                             踢出
                           </Button>

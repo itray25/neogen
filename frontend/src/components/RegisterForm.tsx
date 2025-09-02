@@ -11,6 +11,7 @@ import { useForm } from "react-hook-form";
 import { toaster } from "@/components/ui/toaster";
 import { LuText, LuCircleUser, LuTerminal } from "react-icons/lu";
 import { validateUsername } from "../utils/usernameValidator";
+import { buildApiUrl, API_ENDPOINTS } from "../config/api";
 interface RegisterUserData {
   user_id: string;
   username: string;
@@ -78,7 +79,7 @@ export const RegisterForm: React.FC<RegisterFormProps> = ({
       }
 
       // 直接注册，让后端处理重复检查
-      const registerResponse = await fetch("/api/users", {
+      const registerResponse = await fetch(buildApiUrl(API_ENDPOINTS.USERS), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -10,6 +10,7 @@ import {
 } from "@chakra-ui/react";
 import { LuRefreshCw, LuInfo } from "react-icons/lu";
 import { RoomCard, RoomInfo } from "./RoomCard";
+import { buildApiUrl, API_ENDPOINTS } from "../config/api";
 
 interface RoomGridProps {}
 
@@ -36,9 +37,11 @@ export const RoomGrid: React.FC<RoomGridProps> = () => {
       setError(null);
 
       const endIndex = startIndex + ROOMS_PER_PAGE;
-      const response = await fetch(
-        `http://localhost:3000/api/getRooms?start=${startIndex}&end=${endIndex}`
-      );
+      const url = buildApiUrl(API_ENDPOINTS.GET_ROOMS, {
+        start: startIndex,
+        end: endIndex,
+      });
+      const response = await fetch(url);
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);

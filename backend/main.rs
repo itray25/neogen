@@ -75,21 +75,32 @@ async fn main() -> std::io::Result<()> {
             app = app.service(Files::new("/images", "frontend/public").show_files_listing());
         }
         
-        // 生产模式下的静态文件服务
+        // 生产模式下的静态文件服务和SPA支持
         #[cfg(not(debug_assertions))]
         {
             app = app.service(Files::new("/images", "frontend/dist/images").show_files_listing());
             app = app.service(Files::new("/assets", "frontend/dist/assets").show_files_listing());
             app = app.service(Files::new("/pwa.json", "frontend/dist/pwa.json"));
             app = app.service(Files::new("/robots.txt", "frontend/dist/robots.txt"));
-            // 只为根路径提供 index.html，不要捕获所有路径
+            
+            // 添加根路径的处理
             app = app.route("/", web::get().to(|| async {
                 actix_files::NamedFile::open("frontend/dist/index.html")
             }));
+            
+            // SPA fallback - 为所有其他GET请求返回index.html（支持前端路由）
+            app = app.default_service(
+                web::get().to(|| async {
+                    actix_files::NamedFile::open("frontend/dist/index.html")
+                })
+            );
         }
         
-        // 默认路由 - 渲染前端页面 (这是关键!)
-        app = app.default_service(web::get().to(create_rust_app::render_views));
+        // 开发模式下的默认路由 - 使用 create_rust_app 的视图渲染
+        #[cfg(debug_assertions)]
+        {
+            app = app.default_service(web::get().to(create_rust_app::render_views));
+        }
         
         app
     }).bind("0.0.0.0:3000")?.run().await

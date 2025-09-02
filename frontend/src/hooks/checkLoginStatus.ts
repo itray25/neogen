@@ -1,3 +1,5 @@
+import { buildApiUrl, API_ENDPOINTS } from "../config/api";
+
 export const checkLoginStatus = async (): Promise<
   { user_id: string; username: string } | false
 > => {
@@ -12,7 +14,7 @@ export const checkLoginStatus = async (): Promise<
   try {
     // 调用后端接口获取用户信息
     const response = await fetch(
-      `/api/users?user_id=${encodeURIComponent(user_id)}`,
+      buildApiUrl(API_ENDPOINTS.USERS, { user_id }),
       {
         method: "GET",
         headers: {

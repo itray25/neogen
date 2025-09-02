@@ -1,4 +1,5 @@
 import { createToaster } from "@chakra-ui/react";
+import { buildWsUrl, API_ENDPOINTS } from "../config/api";
 
 // 创建 toaster 实例
 const toaster = createToaster({
@@ -24,7 +25,12 @@ export interface ChatMessage {
     | "error"
     | "connected" // 认证成功消息
     | "redirect_to_home" // 重定向到首页消息
-    | "change_group"; // 新增：切换组别消息
+    | "change_group" // 新增：切换组别消息
+    | "start_game" // 新增：游戏开始消息
+    | "end_game" // 新增：游戏结束消息
+    | "game_turn_update" // 新增：游戏回合更新消息
+    | "map_update" // 新增：地图更新消息
+    | "game_win"; // 新增：游戏胜利消息
   room_id?: number | string; // 支持数字和字符串类型的房间ID
   sender_id?: number;
   player_id?: number;
@@ -47,6 +53,14 @@ export interface ChatMessage {
   // 新增：分组相关字段
   groups?: GroupInfo[];
   target_group_id?: number; // 切换组别时的目标组ID
+  max_players?: number; // 可选的最大玩家数
+  // 游戏回合相关字段
+  turn?: number; // 当前回合数
+  turn_half?: boolean; // true为上半回合, false为下半回合
+  actions?: [string, string][]; // 玩家动作列表 [player_name, action]
+  // 地图相关字段
+  visible_tiles?: [number, number, string, number, string | null][]; // [x, y, tile_type, count, user_id]
+  winner?: string; // 游戏胜利者
 }
 
 // 新增：分组信息接口
@@ -186,11 +200,7 @@ class WebSocketManager {
         }
 
         // 构建WebSocket URL，如果有用户信息则添加认证参数
-        // 根据当前页面协议动态选择ws或wss
-        const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-        const host = window.location.host; // 使用当前页面的host（包括端口）
-
-        let wsUrl = `${protocol}//${host}/global_ws`;
+        let wsUrl = buildWsUrl(API_ENDPOINTS.GLOBAL_WS);
 
         const currentUser = this.getCurrentUser();
 
@@ -468,11 +478,22 @@ class WebSocketManager {
       // 查找当前用户在哪个组
       if (this.gameState.currentUser) {
         const currentUsername = this.gameState.currentUser.username;
+        let foundInGroup = false;
+
         for (const group of message.groups) {
           if (group.players.includes(currentUsername)) {
             this.gameState.currentPlayerGroup[roomId] = group.id;
+            foundInGroup = true;
             break;
           }
+        }
+
+        // 如果用户不在任何组中，清理队伍分配
+        if (!foundInGroup) {
+          delete this.gameState.currentPlayerGroup[roomId];
+          console.log(
+            `用户 ${currentUsername} 不在房间 ${roomId} 的任何组中，已清理队伍分配`
+          );
         }
       }
     }
@@ -537,6 +558,13 @@ class WebSocketManager {
     });
 
     if (message.player_id === this.gameState.currentPlayerId) {
+      // 清理当前房间的队伍分配
+      const currentRoomId = this.gameState.currentRoomId;
+      if (currentRoomId) {
+        delete this.gameState.currentPlayerGroup[String(currentRoomId)];
+        console.log(`玩家离开房间 ${currentRoomId}，已清理队伍分配`);
+      }
+
       this.updateState({
         currentRoomId: null,
         isForcingStart: false,
@@ -577,7 +605,13 @@ class WebSocketManager {
       duration: 3000,
     });
 
-    // 清空当前房间状态
+    // 清空当前房间状态和队伍分配
+    const currentRoomId = this.gameState.currentRoomId;
+    if (currentRoomId) {
+      delete this.gameState.currentPlayerGroup[String(currentRoomId)];
+      console.log(`玩家被重定向离开房间 ${currentRoomId}，已清理队伍分配`);
+    }
+
     this.updateState({
       currentRoomId: null,
       isForcingStart: false,
@@ -621,11 +655,13 @@ class WebSocketManager {
 
   // 发送消息
   send(message: any) {
+    console.log("wsManager.send 被调用:", message);
     if (
       this.ws &&
       this.ws.readyState === WebSocket.OPEN &&
       this.gameState.isConnected
     ) {
+      console.log("发送 WebSocket 消息:", JSON.stringify(message));
       this.ws.send(JSON.stringify(message));
       return true;
     }
@@ -640,6 +676,11 @@ class WebSocketManager {
     // 如果WebSocket未连接，记录错误并尝试重连
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn("WebSocket未连接，消息未发送:", message);
+      console.log("WebSocket状态:", {
+        ws: !!this.ws,
+        readyState: this.ws?.readyState,
+        isConnected: this.gameState.isConnected,
+      });
       if (!this.gameState.isConnected) {
         console.log("尝试重新连接WebSocket...");
         this.connect().catch(console.error);
@@ -781,7 +822,8 @@ class WebSocketManager {
 
   // 获取当前玩家在指定房间的组别
   getCurrentPlayerGroup(roomId: string): number | null {
-    return this.gameState.currentPlayerGroup[roomId] || null;
+    const groupId = this.gameState.currentPlayerGroup[roomId];
+    return groupId !== undefined ? groupId : null;
   }
 
   // 清空消息
@@ -814,6 +856,33 @@ class WebSocketManager {
   // 获取当前状态
   getState(): GameState {
     return this.gameState;
+  }
+
+  // 发送游戏动作
+  sendGameAction(roomId: string | number, action: string) {
+    return this.send({
+      type: "game_action",
+      room_id: roomId,
+      action: action,
+    });
+  }
+
+  // 发送游戏移动命令
+  sendGameMove(
+    roomId: string | number,
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number
+  ) {
+    return this.send({
+      type: "game_move",
+      room_id: roomId,
+      from_x: fromX,
+      from_y: fromY,
+      to_x: toX,
+      to_y: toY,
+    });
   }
 }
 

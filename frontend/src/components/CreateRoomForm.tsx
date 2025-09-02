@@ -17,6 +17,7 @@ import {
 import { PasswordInput } from "@/components/ui/password-input";
 import { LuPlus, LuUsers, LuPalette, LuSettings2 } from "react-icons/lu";
 import { useAuth } from "../contexts/AuthContext";
+import { buildApiUrl, API_ENDPOINTS } from "../config/api";
 
 interface CreateRoomFormProps {
   onRoomCreated: (roomId: string) => void;
@@ -175,7 +176,7 @@ export const CreateRoomForm: React.FC<CreateRoomFormProps> = ({
       if (customRoomId.trim()) request.room_id = customRoomId.trim();
       if (password.trim()) request.password = password.trim();
 
-      const response = await fetch("/api/createRoom", {
+      const response = await fetch(buildApiUrl(API_ENDPOINTS.CREATE_ROOM), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),

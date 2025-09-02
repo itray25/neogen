@@ -10,6 +10,7 @@ import {
 import { useForm } from "react-hook-form";
 import { toaster } from "@/components/ui/toaster";
 import { LuText, LuTerminal } from "react-icons/lu";
+import { buildApiUrl, API_ENDPOINTS } from "../config/api";
 interface LoginUserData {
   user_id: string;
 }
@@ -59,7 +60,7 @@ export const LoginForm: React.FC<LoginFormProps> = ({
 
       // 调用登录 API - 直接使用字符串
       const response = await fetch(
-        `/api/users?user_id=${encodeURIComponent(userId)}`,
+        buildApiUrl(API_ENDPOINTS.USERS, { user_id: userId }),
         {
           method: "GET",
           headers: {
