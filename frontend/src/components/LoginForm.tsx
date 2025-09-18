@@ -1,12 +1,5 @@
 import React, { useState } from "react";
-import {
-  VStack,
-  Input,
-  Field,
-  Button,
-  Text,
-  InputGroup,
-} from "@chakra-ui/react";
+import { VStack, Input, Field, Button, InputGroup } from "@chakra-ui/react";
 import { useForm } from "react-hook-form";
 import { toaster } from "@/components/ui/toaster";
 import { LuText, LuTerminal } from "react-icons/lu";

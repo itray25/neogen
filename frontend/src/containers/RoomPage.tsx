@@ -22,6 +22,7 @@ import { toaster } from "@/components/ui/toaster";
 import { PasswordPrompt } from "../components/PasswordPrompt";
 import { GroupSelector } from "../components/GroupSelector";
 import { ForceStartButton } from "../components/ForceStartButton";
+import MultiChat from "../components/MultiChatV2";
 import type { ChatMessage, GroupInfo } from "../hooks/wsManager";
 
 interface PlayerInfo {
@@ -29,7 +30,6 @@ interface PlayerInfo {
   username: string;
   status: string;
 }
-
 interface RoomInfo {
   name: string;
   host_player_name: string;
@@ -189,15 +189,19 @@ const RoomPage: React.FC = () => {
             break;
 
           case "start_game":
-            // 游戏开始事件 - 跳转到游戏页面
+            // 游戏开始事件 - 自动跳转到游戏页面
             if (message.room_id == roomId) {
               toaster.create({
                 title: "游戏开始",
-                description: "正在跳转到游戏页面...",
+                description: "游戏已开始！正在跳转到游戏页面...",
                 type: "success",
+                duration: 3000,
               });
-              // 跳转到游戏页面
-              navigate(`/rooms/${roomId}/game`);
+
+              // 延迟跳转，让用户看到提示
+              setTimeout(() => {
+                navigate(`/rooms/${roomId}/game`);
+              }, 1000);
             }
             break;
 
@@ -300,6 +304,13 @@ const RoomPage: React.FC = () => {
     }
   };
 
+  // 观战游戏
+  const watchGame = () => {
+    if (roomId) {
+      navigate(`/rooms/${roomId}/game`);
+    }
+  };
+
   // 强制开始游戏
   const handleForceStart = () => {
     if (user && roomId) {
@@ -393,12 +404,40 @@ const RoomPage: React.FC = () => {
                   bg="gray.50"
                   borderRadius="md"
                 >
-                  <Text fontSize="lg" color="gray.500">
-                    等待游戏开始...
-                  </Text>
-                  <Text fontSize="sm" color="gray.400">
-                    房间ID: {roomId}
-                  </Text>
+                  {roomInfo?.status === "playing" ? (
+                    <VStack gap={4}>
+                      <Text fontSize="lg" color="green.600" fontWeight="bold">
+                        游戏进行中
+                      </Text>
+                      <Text fontSize="sm" color="gray.600" textAlign="center">
+                        房间ID: {roomId}
+                      </Text>
+                      <Button colorPalette="blue" onClick={watchGame} size="lg">
+                        观战游戏
+                      </Button>
+                    </VStack>
+                  ) : roomInfo?.status === "in_progress" ? (
+                    <VStack gap={4}>
+                      <Text fontSize="lg" color="green.600" fontWeight="bold">
+                        游戏进行中
+                      </Text>
+                      <Text fontSize="sm" color="gray.600" textAlign="center">
+                        房间ID: {roomId}
+                      </Text>
+                      <Button colorPalette="blue" onClick={watchGame} size="lg">
+                        观战游戏
+                      </Button>
+                    </VStack>
+                  ) : (
+                    <VStack gap={2}>
+                      <Text fontSize="lg" color="gray.500">
+                        等待游戏开始...
+                      </Text>
+                      <Text fontSize="sm" color="gray.400">
+                        房间ID: {roomId}
+                      </Text>
+                    </VStack>
+                  )}
                 </VStack>
               </Card.Body>
             </Card.Root>
@@ -467,26 +506,29 @@ const RoomPage: React.FC = () => {
         {/* 侧边栏 */}
         <VStack align="stretch" minW="300px" gap={4}>
           {/* 强制开始组件 */}
-          <Card.Root>
-            <Card.Header>
-              <Heading size="md">游戏控制</Heading>
-            </Card.Header>
-            <Card.Body>
-              <ForceStartButton
-                isForceStarted={
-                  user?.username
-                    ? roomInfo?.force_start_players?.includes(user.username) ||
-                      false
-                    : false
-                }
-                forceStartCount={roomInfo?.force_start_players?.length || 0}
-                requiredToStart={roomInfo?.required_to_start || 0}
-                onForceStart={handleForceStart}
-                onCancelForceStart={handleCancelForceStart}
-                disabled={!connected || roomInfo?.status === "playing"}
-              />
-            </Card.Body>
-          </Card.Root>
+          {(roomInfo?.required_to_start || 0) > 0 && (
+            <Card.Root>
+              <Card.Header>
+                <Heading size="md">游戏控制</Heading>
+              </Card.Header>
+              <Card.Body>
+                <ForceStartButton
+                  isForceStarted={
+                    user?.username
+                      ? roomInfo?.force_start_players?.includes(
+                          user.username
+                        ) || false
+                      : false
+                  }
+                  forceStartCount={roomInfo?.force_start_players?.length || 0}
+                  requiredToStart={roomInfo?.required_to_start || 0}
+                  onForceStart={handleForceStart}
+                  onCancelForceStart={handleCancelForceStart}
+                  disabled={!connected || roomInfo?.status === "playing"}
+                />
+              </Card.Body>
+            </Card.Root>
+          )}
 
           {/* 分组选择器 */}
           <Card.Root>
@@ -608,6 +650,9 @@ const RoomPage: React.FC = () => {
         onSubmit={handlePasswordSubmit}
         roomName={roomInfo?.name || `房间 ${roomId}`}
       />
+
+      {/* 多功能聊天组件 */}
+      <MultiChat roomId={roomId} />
     </Box>
   );
 };

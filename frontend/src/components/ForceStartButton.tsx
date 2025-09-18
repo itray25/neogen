@@ -21,10 +21,13 @@ export const ForceStartButton: React.FC<ForceStartButtonProps> = ({
   const [animationProgress, setAnimationProgress] = useState(0);
   const [isAnimating, setIsAnimating] = useState(false);
   const [animationKey, setAnimationKey] = useState(0); // 用于强制重新触发动画
-  const isReady = forceStartCount >= requiredToStart;
+  const isReady = requiredToStart > 0 && forceStartCount >= requiredToStart;
 
-  // 计算基础进度
-  const baseProgress = Math.min((forceStartCount / requiredToStart) * 100, 100);
+  // 计算基础进度，避免除零错误
+  const baseProgress =
+    requiredToStart > 0
+      ? Math.min((forceStartCount / requiredToStart) * 100, 100)
+      : 0;
 
   // 当达到100%时，触发动画效果
   useEffect(() => {

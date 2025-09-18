@@ -25,12 +25,14 @@ export interface ChatMessage {
     | "error"
     | "connected" // 认证成功消息
     | "redirect_to_home" // 重定向到首页消息
-    | "change_group" // 新增：切换组别消息
-    | "start_game" // 新增：游戏开始消息
-    | "end_game" // 新增：游戏结束消息
-    | "game_turn_update" // 新增：游戏回合更新消息
-    | "map_update" // 新增：地图更新消息
-    | "game_win"; // 新增：游戏胜利消息
+    | "redirect_to_game" // 重定向到游戏页面消息 - 新增
+    | "change_group" // 切换组别消息
+    | "start_game" // 游戏开始消息
+    | "end_game" // 游戏结束消息
+    | "game_turn_update" // 游戏回合更新消息
+    | "map_update" // 地图更新消息
+    | "game_win" // 游戏胜利消息
+    | "move_ok"; // 移动成功确认消息
   room_id?: number | string; // 支持数字和字符串类型的房间ID
   sender_id?: number;
   player_id?: number;
@@ -59,7 +61,9 @@ export interface ChatMessage {
   turn_half?: boolean; // true为上半回合, false为下半回合
   actions?: [string, string][]; // 玩家动作列表 [player_name, action]
   // 地图相关字段
+  successful_move_sends?: number[];
   visible_tiles?: [number, number, string, number, string | null][]; // [x, y, tile_type, count, user_id]
+  player_powers?: [string, number, number, string][]; // [username, group_id, total_power, status]
   winner?: string; // 游戏胜利者
 }
 
@@ -108,6 +112,12 @@ class WebSocketManager {
   private stateListeners: Set<GameStateListener> = new Set();
   private messageListeners: Set<MessageListener> = new Set();
   private messageQueue: any[] = []; // 消息队列
+
+  // 重连相关状态
+  private reconnectAttempts: number = 0;
+  private maxReconnectAttempts: number = 3;
+  private reconnectInterval: number = 5000; // 5秒
+  private reconnectTimeoutId: number | null = null;
 
   // 订阅状态变化
   subscribe(listener: GameStateListener): () => void {
@@ -219,6 +229,13 @@ class WebSocketManager {
         this.ws = new WebSocket(wsUrl);
 
         this.ws.onopen = () => {
+          // 重连成功，重置重连计数器
+          this.reconnectAttempts = 0;
+          if (this.reconnectTimeoutId) {
+            clearTimeout(this.reconnectTimeoutId);
+            this.reconnectTimeoutId = null;
+          }
+
           this.updateState({
             isConnected: true,
           });
@@ -252,7 +269,7 @@ class WebSocketManager {
           this.handleMessage(event);
         };
 
-        this.ws.onclose = () => {
+        this.ws.onclose = (event) => {
           this.updateState({
             isConnected: false,
             currentPlayerId: null,
@@ -264,13 +281,36 @@ class WebSocketManager {
             isForcingStart: false,
           });
           this.ws = null;
-          this.addSystemMessage("🔌 WebSocket 连接已关闭");
-          toaster.create({
-            title: "连接断开",
-            description: "WebSocket 连接已断开",
-            type: "warning",
-            duration: 3000,
-          });
+
+          const wasIntentional = event.code === 1000 || event.code === 1001;
+
+          if (
+            !wasIntentional &&
+            this.reconnectAttempts < this.maxReconnectAttempts
+          ) {
+            this.addSystemMessage(
+              `🔌 WebSocket 连接断开，${this.reconnectInterval / 1000}秒后尝试重连 (${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`
+            );
+            this.attemptReconnect();
+          } else {
+            this.addSystemMessage("🔌 WebSocket 连接已关闭");
+            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+              this.addSystemMessage("❌ 重连次数已达上限，请手动刷新页面");
+              toaster.create({
+                title: "连接失败",
+                description: "重连失败，请刷新页面重试",
+                type: "error",
+                duration: 10000,
+              });
+            } else {
+              toaster.create({
+                title: "连接断开",
+                description: "WebSocket 连接已断开",
+                type: "warning",
+                duration: 3000,
+              });
+            }
+          }
         };
 
         this.ws.onerror = (error) => {
@@ -295,6 +335,43 @@ class WebSocketManager {
     if (this.ws) {
       this.ws.close();
     }
+  }
+
+  // 尝试重连
+  private attemptReconnect() {
+    this.reconnectAttempts++;
+    console.log(
+      `尝试重连 ${this.reconnectAttempts}/${this.maxReconnectAttempts}`
+    );
+
+    this.reconnectTimeoutId = window.setTimeout(async () => {
+      try {
+        await this.connect();
+        this.addSystemMessage("🎉 重连成功！");
+        toaster.create({
+          title: "重连成功",
+          description: "WebSocket 连接已恢复",
+          type: "success",
+          duration: 3000,
+        });
+      } catch (error) {
+        console.error("重连失败:", error);
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.addSystemMessage(
+            `❌ 重连失败，${this.reconnectInterval / 1000}秒后再次尝试 (${this.reconnectAttempts + 1}/${this.maxReconnectAttempts})`
+          );
+          this.attemptReconnect();
+        } else {
+          this.addSystemMessage("❌ 重连次数已达上限，请手动刷新页面");
+          toaster.create({
+            title: "重连失败",
+            description: "无法恢复连接，请刷新页面重试",
+            type: "error",
+            duration: 10000,
+          });
+        }
+      }
+    }, this.reconnectInterval);
   }
 
   // 处理接收到的消息
@@ -343,6 +420,9 @@ class WebSocketManager {
           break;
         case "redirect_to_home":
           this.handleRedirectToHome(message);
+          break;
+        case "redirect_to_game":
+          this.handleRedirectToGame(message);
           break;
         case "change_name":
           this.handleChangeName(message);
@@ -516,13 +596,17 @@ class WebSocketManager {
         requiredToStart: 0,
       });
       if (message.room_id !== undefined && message.room_id !== null) {
-        this.gameState.roomGroups[String(message.room_id)] = Array.from(
-          { length: 9 },
-          (_, id) => ({
-            id,
-            players: [],
-          })
-        );
+        // 只有当房间组别信息不存在时才初始化，避免覆盖现有的玩家分组
+        const roomIdStr = String(message.room_id);
+        if (!this.gameState.roomGroups[roomIdStr]) {
+          this.gameState.roomGroups[roomIdStr] = Array.from(
+            { length: 9 },
+            (_, id) => ({
+              id,
+              players: [],
+            })
+          );
+        }
       }
       toaster.create({
         title: "加入房间成功",
@@ -536,11 +620,12 @@ class WebSocketManager {
         room_id: message.room_id,
       });
     } else {
+      // 其他玩家加入房间的通知
       toaster.create({
-        title: "新玩家加入",
-        description: `${message.player_name} 加入了房间`,
+        title: "👤 新玩家加入",
+        description: `${message.player_name || '未知玩家'} 加入了房间`,
         type: "info",
-        duration: 2000,
+        duration: 4000,
       });
       // 有玩家加入也刷新房间玩家信息
       this.send({
@@ -573,10 +658,18 @@ class WebSocketManager {
         roomPlayers: [],
       });
       toaster.create({
-        title: "离开房间",
+        title: "📤 离开房间",
         description: `已离开房间 ${message.room_id}`,
         type: "warning",
         duration: 3000,
+      });
+    } else {
+      // 其他玩家离开房间的通知
+      toaster.create({
+        title: "👋 玩家离开",
+        description: `${message.player_name || '某位玩家'} 离开了房间`,
+        type: "warning", 
+        duration: 4000,
       });
     }
     // 有玩家离开也刷新房间玩家信息
@@ -625,6 +718,34 @@ class WebSocketManager {
       // 如果在React Router环境中，执行页面跳转
       if (window.location.pathname !== "/") {
         window.location.href = "/";
+      }
+    }, 1000);
+  }
+
+  // 处理重定向到游戏页面
+  private handleRedirectToGame(message: ChatMessage) {
+    console.log("收到重定向到游戏页面的消息:", message);
+
+    // 显示提示消息
+    toaster.create({
+      title: "游戏重定向",
+      description: "游戏正在进行中，您将作为观众加入",
+      type: "info",
+      duration: 3000,
+    });
+
+    // 更新当前房间状态
+    if (message.room_id) {
+      this.updateState({
+        currentRoomId: message.room_id,
+      });
+    }
+
+    // 延迟跳转，给用户时间看到提示
+    setTimeout(() => {
+      if (message.room_id) {
+        console.log("自动跳转到游戏页面:", `/rooms/${message.room_id}/game`);
+        window.location.href = `/rooms/${message.room_id}/game`;
       }
     }, 1000);
   }
@@ -811,6 +932,15 @@ class WebSocketManager {
       target_group_id: targetGroupId,
     });
     console.log(`发送切换组别请求: 房间 ${roomId}, 目标组 ${targetGroupId}`);
+
+    // 队伍变更后，请求后端检查是否应该开始游戏
+    setTimeout(() => {
+      this.send({
+        type: "should_start",
+        room_id: roomId,
+      });
+      console.log(`队伍变更后，请求检查游戏开始条件: 房间 ${roomId}`);
+    }, 100); // 延迟一点确保组别切换完成
   }
 
   // 获取房间分组信息
@@ -873,7 +1003,9 @@ class WebSocketManager {
     fromX: number,
     fromY: number,
     toX: number,
-    toY: number
+    toY: number,
+    moveId: number,
+    isHalfMove: boolean = false
   ) {
     return this.send({
       type: "game_move",
@@ -882,6 +1014,8 @@ class WebSocketManager {
       from_y: fromY,
       to_x: toX,
       to_y: toY,
+      move_id: moveId,
+      is_half_move: isHalfMove,
     });
   }
 }

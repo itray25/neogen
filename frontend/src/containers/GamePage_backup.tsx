@@ -20,7 +20,6 @@ import {
   LuTent,
   LuHotel,
   LuLandmark,
-  LuBuilding2,
 } from "react-icons/lu";
 import { useAuth } from "../contexts/AuthContext";
 import { useWebSocket } from "../hooks/websocket";
@@ -29,10 +28,6 @@ import { wsManager } from "../hooks/wsManager";
 import { toaster } from "@/components/ui/toaster";
 import type { ChatMessage } from "../hooks/wsManager";
 import { set } from "react-hook-form";
-import MultiChat, { MultiChatRef } from "../components/MultiChatV2";
-import PlayerPowerRanking, {
-  type PlayerPowerData,
-} from "../components/PlayerPowerRanking";
 
 interface MapTile {
   x: number;
@@ -52,7 +47,6 @@ interface MoveEvent {
   move_id: number; // 唯一标识符
   timestamp: number;
   sent?: boolean; // 是否已发送到后端
-  isHalfMove?: boolean; // 是否为分半移动
 }
 
 interface MoveTrack {
@@ -61,14 +55,484 @@ interface MoveTrack {
   createdAt: number;
 }
 
+// 玩家兵力数据接口
+interface PlayerPowerData {
+  username: string;
+  groupId: number;
+  totalPower: number;
+}
+
+// 玩家兵力显示组件
+interface PlayerPowerDisplayProps {
+  playerPowers: PlayerPowerData[];
+  roomInfo?: any; // 房间信息，包含玩家用户名等
+}
+
+const PlayerPowerDisplay: React.FC<PlayerPowerDisplayProps> = ({
+  playerPowers,
+  roomInfo,
+}) => {
+  // 获取队伍信息
+  const getTeamInfo = (groupId: number) => {
+    const teamMap = {
+      0: { name: "红队", color: "#FF4444", teamId: "team_0" },
+      1: { name: "蓝队", color: "#4444FF", teamId: "team_1" },
+      2: { name: "绿队", color: "#44FF44", teamId: "team_2" },
+      3: { name: "黄队", color: "#FFFF44", teamId: "team_3" },
+      4: { name: "紫队", color: "#FF44FF", teamId: "team_4" },
+      5: { name: "青队", color: "#44FFFF", teamId: "team_5" },
+      6: { name: "橙队", color: "#FF8844", teamId: "team_6" },
+      7: { name: "粉队", color: "#FF8888", teamId: "team_7" },
+    };
+    return teamMap[groupId as keyof typeof teamMap];
+  };
+
+  // 只使用后端提供的真实数据
+  const sortedPlayers = playerPowers
+    .filter((player) => player.totalPower > 0 && player.groupId < 8) // 排除观众
+    .sort((a, b) => b.totalPower - a.totalPower);
+
+  // 如果没有后端数据，显示等待状态
+  if (sortedPlayers.length === 0) {
+    return (
+      <Box
+        position="absolute"
+        top="70px"
+        right="20px"
+        backgroundColor="rgba(255, 255, 255, 0.95)"
+        border="2px solid rgba(0, 0, 0, 0.1)"
+        borderRadius="8px"
+        p={4}
+        minW="240px"
+        boxShadow="0 4px 12px rgba(0, 0, 0, 0.15)"
+        zIndex={15}
+      >
+        <Text
+          fontSize="md"
+          fontWeight="bold"
+          mb={3}
+          color="gray.700"
+          textAlign="center"
+        >
+          兵力排行榜
+        </Text>
+        <Box textAlign="center" py={4}>
+          <Text fontSize="sm" color="gray.500">
+            等待后端数据...
+          </Text>
+        </Box>
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      position="absolute"
+      top="70px"
+      right="20px"
+      backgroundColor="rgba(255, 255, 255, 0.98)"
+      border="2px solid rgba(0, 0, 0, 0.1)"
+      borderRadius="8px"
+      p={3}
+      minW="260px"
+      maxW="300px"
+      boxShadow="0 6px 20px rgba(0, 0, 0, 0.15)"
+      zIndex={15}
+    >
+      <Text
+        fontSize="md"
+        fontWeight="bold"
+        mb={3}
+        color="gray.800"
+        textAlign="center"
+        borderBottom="2px solid"
+        borderColor="gray.200"
+        pb={2}
+      >
+        🏆 兵力排行榜
+      </Text>
+
+      <VStack gap={2} align="stretch">
+        {sortedPlayers.map((player, index) => {
+          const teamInfo = getTeamInfo(player.groupId);
+          const isFirstPlace = index === 0;
+          const teamColor = teamInfo?.color || "#999999";
+
+          return (
+            <Box
+              key={`${player.groupId}-${player.username}`}
+              position="relative"
+              borderRadius="8px"
+              overflow="hidden"
+              border={isFirstPlace ? "3px solid #FFD700" : "2px solid rgba(255, 255, 255, 0.5)"}
+              boxShadow={isFirstPlace ? "0 4px 12px rgba(255, 215, 0, 0.4)" : "0 2px 8px rgba(0, 0, 0, 0.15)"}
+              transform={isFirstPlace ? "scale(1.02)" : "scale(1)"}
+              transition="all 0.2s ease"
+            >
+              {/* 队伍颜色背景 */}
+              <Box
+                position="absolute"
+                top="0"
+                left="0"
+                right="0"
+                bottom="0"
+                bg={teamColor}
+                opacity={0.8}
+              />
+              
+              {/* 白色半透明覆盖层提高可读性 */}
+              <Box
+                position="absolute"
+                top="0"
+                left="0"
+                right="0"
+                bottom="0"
+                bg="rgba(255, 255, 255, 0.85)"
+              />
+
+              <Box position="relative" zIndex={2} p={3}>
+                <HStack justify="space-between" align="center">
+                  <HStack gap={3}>
+                    {/* 排名徽章 */}
+                    <Box
+                      bg={
+                        isFirstPlace
+                          ? "linear-gradient(135deg, #FFD700, #FFA500)"
+                          : index === 1
+                          ? "linear-gradient(135deg, #C0C0C0, #A0A0A0)"
+                          : index === 2
+                          ? "linear-gradient(135deg, #CD7F32, #B8860B)"
+                          : "linear-gradient(135deg, #666666, #555555)"
+                      }
+                      color="white"
+                      fontSize="sm"
+                      fontWeight="bold"
+                      w="32px"
+                      h="32px"
+                      borderRadius="full"
+                      display="flex"
+                      alignItems="center"
+                      justifyContent="center"
+                      boxShadow="0 2px 6px rgba(0, 0, 0, 0.3)"
+                      flexShrink={0}
+                    >
+                      {isFirstPlace ? "👑" : index + 1}
+                    </Box>
+
+                    {/* 玩家信息 */}
+                    <VStack align="start" gap={0} flex={1}>
+                      <Text
+                        fontSize="sm"
+                        fontWeight="bold"
+                        color="gray.800"
+                        lineHeight="1.2"
+                        overflow="hidden"
+                        textOverflow="ellipsis"
+                        whiteSpace="nowrap"
+                        maxW="120px"
+                      >
+                        {player.username}
+                      </Text>
+                      <Text
+                        fontSize="xs"
+                        color="gray.600"
+                        lineHeight="1"
+                        fontWeight="semibold"
+                      >
+                        {teamInfo?.name || `队伍${player.groupId}`}
+                      </Text>
+                    </VStack>
+                  </HStack>
+
+                  {/* 兵力数值 */}
+                  <Box
+                    bg={isFirstPlace ? "linear-gradient(135deg, #FFD700, #FFA500)" : teamColor}
+                    color="white"
+                    px={3}
+                    py={2}
+                    borderRadius="full"
+                    minW="60px"
+                    textAlign="center"
+                    boxShadow="0 2px 6px rgba(0, 0, 0, 0.3)"
+                    flexShrink={0}
+                  >
+                    <Text fontSize="sm" fontWeight="bold">
+                      {player.totalPower}
+                    </Text>
+                  </Box>
+                </HStack>
+              </Box>
+
+              {/* 队伍颜色左侧条 */}
+              <Box
+                position="absolute"
+                left="0"
+                top="0"
+                bottom="0"
+                w="5px"
+                bg={teamColor}
+                zIndex={3}
+              />
+            </Box>
+          );
+        })}
+      </VStack>
+
+      {/* 底部说明 */}
+      <Box
+        mt={3}
+        pt={2}
+        borderTop="1px solid"
+        borderColor="gray.200"
+        textAlign="center"
+      >
+        <Text fontSize="xs" color="gray.500" fontWeight="medium">
+          📊 实时数据更新
+        </Text>
+      </Box>
+    </Box>
+  );
+};
+
+    return (
+      <Box
+        position="absolute"
+        top="70px"
+        right="20px"
+        backgroundColor="rgba(255, 255, 255, 0.95)"
+        border="1px solid rgba(229, 231, 235, 0.8)"
+        borderRadius="12px"
+        p={4}
+        minW="220px"
+        boxShadow="0 4px 12px rgba(0, 0, 0, 0.15)"
+        backdropFilter="blur(12px)"
+        zIndex={15}
+      >
+        <Text
+          fontSize="sm"
+          fontWeight="bold"
+          mb={3}
+          color="gray.700"
+          textAlign="center"
+        >
+          玩家兵力排行 (测试)
+        </Text>
+
+        <VStack gap={2} align="stretch">
+          {testPlayers.map((player, index) => {
+            const teamInfo = getTeamInfo(player.groupId);
+            const isFirstPlace = index === 0;
+
+            return (
+              <Box
+                key={`${player.groupId}-${player.username}`}
+                bg={
+                  isFirstPlace
+                    ? "rgba(255, 215, 0, 0.1)"
+                    : "rgba(255, 255, 255, 0.8)"
+                }
+                border={
+                  isFirstPlace
+                    ? "1px solid rgba(255, 215, 0, 0.4)"
+                    : "1px solid rgba(229, 231, 235, 0.6)"
+                }
+                borderRadius="8px"
+                p={3}
+                position="relative"
+                overflow="hidden"
+              >
+                <HStack justify="space-between" position="relative" zIndex={2}>
+                  <HStack gap={2}>
+                    {/* 排名徽章 */}
+                    <Box
+                      bg={
+                        isFirstPlace
+                          ? "linear-gradient(135deg, #FFD700, #FFA500)"
+                          : "gray.400"
+                      }
+                      color="white"
+                      fontSize="xs"
+                      fontWeight="bold"
+                      px={2}
+                      py={1}
+                      borderRadius="full"
+                      minW="24px"
+                      textAlign="center"
+                      boxShadow="0 2px 4px rgba(0, 0, 0, 0.2)"
+                    >
+                      {index + 1}
+                    </Box>
+
+                    {/* 玩家信息 */}
+                    <VStack align="start" gap={0}>
+                      <Text
+                        fontSize="sm"
+                        fontWeight="semibold"
+                        color="gray.800"
+                        lineHeight="1.2"
+                      >
+                        {player.username}
+                      </Text>
+                      <Text fontSize="xs" color="gray.600" lineHeight="1">
+                        {teamInfo?.name || `队伍${player.groupId}`}
+                      </Text>
+                    </VStack>
+                  </HStack>
+
+                  {/* 兵力数值 */}
+                  <Text
+                    fontSize="sm"
+                    fontWeight="bold"
+                    color={isFirstPlace ? "#B8860B" : "gray.700"}
+                  >
+                    {player.totalPower}
+                  </Text>
+                </HStack>
+              </Box>
+            );
+          })}
+        </VStack>
+
+        {/* 底部装饰线 */}
+        <Box
+          mt={3}
+          h="2px"
+          bg="linear-gradient(90deg, transparent 0%, rgba(102, 126, 234, 0.5) 50%, transparent 100%)"
+          borderRadius="1px"
+        />
+      </Box>
+    );
+  }
+
+  return (
+    <Box
+      position="absolute"
+      top="70px"
+      right="20px"
+      backgroundColor="rgba(255, 255, 255, 0.95)"
+      border="1px solid rgba(229, 231, 235, 0.8)"
+      borderRadius="12px"
+      p={4}
+      minW="220px"
+      boxShadow="0 4px 12px rgba(0, 0, 0, 0.15)"
+      backdropFilter="blur(12px)"
+      zIndex={15}
+    >
+      <Text
+        fontSize="sm"
+        fontWeight="bold"
+        mb={3}
+        color="gray.700"
+        textAlign="center"
+      >
+        玩家兵力排行
+      </Text>
+
+      <VStack gap={2} align="stretch">
+        {sortedPlayers.map((player, index) => {
+          const teamInfo = getTeamInfo(player.groupId);
+          const isFirstPlace = index === 0;
+          const isTopThree = index < 3;
+
+          return (
+            <Box
+              key={`${player.groupId}-${player.username}`}
+              bg={
+                isFirstPlace
+                  ? "rgba(255, 215, 0, 0.1)"
+                  : "rgba(255, 255, 255, 0.8)"
+              }
+              border={
+                isFirstPlace
+                  ? "1px solid rgba(255, 215, 0, 0.4)"
+                  : "1px solid rgba(229, 231, 235, 0.6)"
+              }
+              borderRadius="8px"
+              p={3}
+              position="relative"
+              overflow="hidden"
+            >
+              {/* 背景渐变 */}
+              <Box
+                position="absolute"
+                top="0"
+                left="0"
+                right="0"
+                bottom="0"
+                bg={`linear-gradient(135deg, ${teamInfo?.color}15 0%, transparent 70%)`}
+                borderRadius="8px"
+              />
+
+              <HStack justify="space-between" position="relative" zIndex={2}>
+                <HStack gap={2}>
+                  {/* 排名徽章 */}
+                  <Box
+                    bg={
+                      isFirstPlace
+                        ? "linear-gradient(135deg, #FFD700, #FFA500)"
+                        : isTopThree
+                          ? `linear-gradient(135deg, ${teamInfo?.color}, ${teamInfo?.color}80)`
+                          : "gray.400"
+                    }
+                    color="white"
+                    fontSize="xs"
+                    fontWeight="bold"
+                    px={2}
+                    py={1}
+                    borderRadius="full"
+                    minW="24px"
+                    textAlign="center"
+                    boxShadow="0 2px 4px rgba(0, 0, 0, 0.2)"
+                  >
+                    {index + 1}
+                  </Box>
+
+                  {/* 玩家信息 */}
+                  <VStack align="start" gap={0}>
+                    <Text
+                      fontSize="sm"
+                      fontWeight="semibold"
+                      color="gray.800"
+                      lineHeight="1.2"
+                    >
+                      {player.username}
+                    </Text>
+                    <Text fontSize="xs" color="gray.600" lineHeight="1">
+                      {teamInfo?.name || `队伍${player.groupId}`}
+                    </Text>
+                  </VStack>
+                </HStack>
+
+                {/* 兵力数值 */}
+                <Text
+                  fontSize="sm"
+                  fontWeight="bold"
+                  color={isFirstPlace ? "#B8860B" : "gray.700"}
+                >
+                  {player.totalPower}
+                </Text>
+              </HStack>
+            </Box>
+          );
+        })}
+      </VStack>
+
+      {/* 底部装饰线 */}
+      <Box
+        mt={3}
+        h="2px"
+        bg="linear-gradient(90deg, transparent 0%, rgba(102, 126, 234, 0.5) 50%, transparent 100%)"
+        borderRadius="1px"
+      />
+    </Box>
+  );
+};
+
 const GamePage: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const navigate = useNavigate();
   const { user, isAuthenticated } = useAuth();
   const { gameState } = useWebSocket();
-
-  // 聊天组件ref
-  const multiChatRef = useRef<MultiChatRef>(null);
 
   // 确保WebSocket连接和用户认证
   useAuthenticatedWebSocket();
@@ -99,35 +563,6 @@ const GamePage: React.FC = () => {
     };
   }, []);
 
-  // 页面初始化：禁用滚动，确保键盘焦点
-  useEffect(() => {
-    // 禁用body滚动
-    const originalOverflow = document.body.style.overflow;
-    const originalPosition = document.body.style.position;
-
-    document.body.style.overflow = "hidden";
-    document.body.style.position = "fixed";
-    document.body.style.width = "100%";
-    document.body.style.height = "100%";
-
-    // 确保页面能够获取键盘焦点
-    const gamePageElement = document.querySelector(
-      "[data-game-page]"
-    ) as HTMLElement;
-    if (gamePageElement) {
-      gamePageElement.focus();
-      gamePageElement.tabIndex = -1; // 使其可以接收焦点但不在tab序列中
-    }
-
-    return () => {
-      // 恢复原始样式
-      document.body.style.overflow = originalOverflow;
-      document.body.style.position = originalPosition;
-      document.body.style.width = "";
-      document.body.style.height = "";
-    };
-  }, []);
-
   const [gameStarted, setGameStarted] = useState(false);
   const [gameEnded, setGameEnded] = useState(false);
   const [currentTurn, setCurrentTurn] = useState(0);
@@ -144,71 +579,10 @@ const GamePage: React.FC = () => {
   const [playerTeam, setPlayerTeam] = useState<string>("");
   const [playerGroupId, setPlayerGroupId] = useState<number | null>(null);
   const [isObserver, setIsObserver] = useState<boolean>(false);
-  const [hasShownNoGameToast, setHasShownNoGameToast] =
-    useState<boolean>(false);
 
   // 玩家兵力数据和房间信息
   const [playerPowers, setPlayerPowers] = useState<PlayerPowerData[]>([]);
   const [roomInfo, setRoomInfo] = useState<any>(null);
-
-  // 分半模式相关状态
-  const [isHalfMode, setIsHalfMode] = useState<boolean>(false); // Z键激活的当前分半模式
-  const [markedTile, setMarkedTile] = useState<{ x: number; y: number } | null>(
-    null
-  ); // E键标记的特殊tile
-
-  // 地图缩放相关状态 - 使用localStorage持久化用户缩放状态
-  const [mapZoom, setMapZoom] = useState<number>(() => {
-    const saved = localStorage.getItem(`mapZoom_${roomId}`);
-    return saved ? parseFloat(saved) : 1;
-  });
-  const [autoZoomApplied, setAutoZoomApplied] = useState<boolean>(() => {
-    const saved = localStorage.getItem(`autoZoomApplied_${roomId}`);
-    return saved === "true";
-  });
-  const [userHasZoomed, setUserHasZoomed] = useState<boolean>(() => {
-    const saved = localStorage.getItem(`userHasZoomed_${roomId}`);
-    return saved === "true";
-  });
-
-  // 地图拖拽相关状态
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(
-    null
-  );
-  const [mapOffset, setMapOffset] = useState<{ x: number; y: number }>({
-    x: 0,
-    y: 0,
-  });
-
-  // 计算自动缩放倍数
-  const calculateAutoZoom = (mapWidth: number, mapHeight: number) => {
-    const baseTileSize = 60; // 固定tile大小
-    const mapPixelWidth = mapWidth * baseTileSize;
-    const mapPixelHeight = mapHeight * baseTileSize;
-
-    // 获取可用的视口大小（减去UI控件的空间）
-    // 左侧快捷键面板约180px宽，右侧聊天约320px宽，上下各留40px边距
-    const reservedWidth = 180 + 320 + 80; // 左侧面板 + 右侧聊天 + 边距
-    const reservedHeight = 80 + 100; // 上下边距 + 底部控件空间
-
-    const viewportWidth = Math.max(window.innerWidth - reservedWidth, 400);
-    const viewportHeight = Math.max(window.innerHeight - reservedHeight, 300);
-
-    // 计算需要的缩放倍数以适应视口
-    const scaleX = viewportWidth / mapPixelWidth;
-    const scaleY = viewportHeight / mapPixelHeight;
-
-    // 选择较小的缩放倍数确保地图完全可见，并限制在合理范围内
-    const autoScale = Math.min(scaleX, scaleY, 4.0); // 增大最大缩放到4倍
-    const finalScale = Math.max(autoScale, 0.3); // 最小0.3倍缩放
-
-    console.log(
-      `自动缩放计算详情: 地图${mapWidth}x${mapHeight} (${mapPixelWidth}x${mapPixelHeight}px), 可用视口${viewportWidth}x${viewportHeight}px, 计算缩放${finalScale.toFixed(2)}`
-    );
-
-    return finalScale;
-  };
 
   // 移动轨迹缓存（支持多个轨迹）
   const [moveTracks, setMoveTracks] = useState<MoveTrack[]>([]);
@@ -230,8 +604,6 @@ const GamePage: React.FC = () => {
   const playerGroupIdRef = useRef(playerGroupId);
   const gameStartedRef = useRef(gameStarted);
   const gameEndedRef = useRef(gameEnded);
-  const isHalfModeRef = useRef(isHalfMode); // 添加分半模式状态的ref
-  const markedTileRef = useRef(markedTile); // 添加标记tile状态的ref
 
   // 保持 ref 与状态同步
   useEffect(() => {
@@ -257,14 +629,6 @@ const GamePage: React.FC = () => {
   useEffect(() => {
     gameEndedRef.current = gameEnded;
   }, [gameEnded]);
-
-  useEffect(() => {
-    isHalfModeRef.current = isHalfMode;
-  }, [isHalfMode]);
-
-  useEffect(() => {
-    markedTileRef.current = markedTile;
-  }, [markedTile]);
 
   // 根据组别ID获取队伍信息
   const getTeamInfo = (groupId: number | null) => {
@@ -292,49 +656,6 @@ const GamePage: React.FC = () => {
       }
     );
   };
-
-  // 统一的房间初始化逻辑 - 合并自动加入和房间信息请求，避免重复
-  useEffect(() => {
-    if (
-      roomId &&
-      isAuthenticated &&
-      user &&
-      wsManager.isConnected() &&
-      !isInitialized
-    ) {
-      console.log("初始化游戏页面，检查房间状态:", roomId);
-      setIsInitialized(true);
-
-      const currentRoomId = wsManager.getState().currentRoomId;
-
-      // 如果当前不在目标房间中，自动加入
-      if (currentRoomId !== roomId) {
-        console.log("不在目标房间中，自动加入房间:", roomId);
-        wsManager.joinRoom(roomId, user.username);
-
-        toaster.create({
-          title: "自动加入房间",
-          description: `正在加入房间 ${roomId}`,
-          type: "info",
-          duration: 3000,
-        });
-
-        // 延迟请求房间信息，等待加入完成
-        setTimeout(() => {
-          wsManager.send({
-            type: "get_room_info",
-            room_id: roomId,
-          });
-        }, 500);
-      } else {
-        // 已经在房间中，直接请求房间信息
-        wsManager.send({
-          type: "get_room_info",
-          room_id: roomId,
-        });
-      }
-    }
-  }, [roomId, isAuthenticated, user, wsManager.isConnected(), isInitialized]);
 
   // 获取当前玩家的队伍信息 - 添加更多依赖项确保及时更新
   useEffect(() => {
@@ -562,32 +883,14 @@ const GamePage: React.FC = () => {
             // 验证移动是否可执行
             if (canExecuteMove(moveToSend, currentMap, currentTeam)) {
               console.log("移动验证通过，即将发送");
-
-              // 确定是否使用半移动模式 - 只使用移动事件中已设置的标记
-              // 执行阶段不受当前状态影响，只看构建时设置的isHalfMove标记
-              const shouldUseHalfMove = moveToSend.isHalfMove || false; // 只使用移动事件中的标记
-
-              console.log("🎯 分半移动判断详情:", {
-                moveIsHalfMove: moveToSend.isHalfMove,
-                shouldUseHalfMove,
-                moveToSend,
-              });
-
-              // 发送到后端（现在传递半移动标志）
+              // 发送到后端
               sendMove(
                 moveToSend.from_x,
                 moveToSend.from_y,
                 moveToSend.to_x,
                 moveToSend.to_y,
-                moveToSend.move_id,
-                shouldUseHalfMove
+                moveToSend.move_id
               );
-
-              // 如果使用了半移动模式，发送成功后自动退出分半模式并重置相关状态
-              if (shouldUseHalfMove) {
-                // 执行阶段不需要重置任何当前状态，因为只使用移动中已设置的标记
-                // 不做任何状态重置
-              }
 
               console.log("发送移动事件:", moveToSend);
               console.log("当前队伍:", currentTeam);
@@ -620,14 +923,13 @@ const GamePage: React.FC = () => {
 
               // 删除当前整个轨迹
               setMoveTracks((prev) => prev.slice(1));
-              /*
+
               toaster.create({
                 title: "移动失败",
                 description: `无法执行移动 (${moveToSend.from_x},${moveToSend.from_y}) → (${moveToSend.to_x},${moveToSend.to_y})，已删除相关轨迹`,
                 type: "warning",
                 duration: 2000,
               });
-              */
             }
           } else {
             console.log("移动已发送，等待服务器确认:", moveToSend);
@@ -637,7 +939,7 @@ const GamePage: React.FC = () => {
           setMoveTracks((prev) => prev.slice(1));
         }
       }
-    }, 500); // 改为500毫秒间隔，0.5秒执行一次
+    }, 500); // 改为500毫秒间隔，降低频率
 
     // 清理函数
     return () => {
@@ -660,6 +962,18 @@ const GamePage: React.FC = () => {
     setIsConstructingTrack(false);
   };
 
+  // 初始化：请求房间信息检查游戏状态
+  useEffect(() => {
+    if (roomId && !isInitialized) {
+      console.log("初始化游戏页面，请求房间信息:", roomId);
+      setIsInitialized(true);
+      wsManager.send({
+        type: "get_room_info",
+        room_id: roomId,
+      });
+    }
+  }, [roomId, isInitialized]);
+
   // 发送游戏动作
   const sendAction = (action: string) => {
     // 使用 ref 中的最新状态
@@ -674,14 +988,13 @@ const GamePage: React.FC = () => {
 
     wsManager.sendGameAction(roomId, action);
     setLastActionSent(action);
-    /*
+
     toaster.create({
       title: "动作已发送",
       description: `已发送动作：${action}`,
       type: "success",
       duration: 1000,
     });
-    */
   };
   const genMoveId = () => {
     const newId = curMoveId + 1;
@@ -694,8 +1007,7 @@ const GamePage: React.FC = () => {
     fromY: number,
     toX: number,
     toY: number,
-    moveId: number,
-    isHalfMove?: boolean
+    moveId: number
   ) => {
     // 使用 ref 中的最新状态，而不是 React 状态
     const currentGameStarted = gameStartedRef.current;
@@ -717,39 +1029,22 @@ const GamePage: React.FC = () => {
       return;
     }
 
-    console.log("🎯 sendMove 分半移动调试:", {
-      isHalfMove: isHalfMove || false,
-      currentIsHalfMode: isHalfMode,
-      moveDetails: `从(${fromX},${fromY})到(${toX},${toY})`,
-      moveId,
-    });
-
     console.log("调用 wsManager.sendGameMove:", {
       roomId,
       fromX,
       fromY,
       toX,
       toY,
-      isHalfMove: isHalfMove || false,
     });
     // 禁用乐观更新，直接发送到后端，等待权威地图更新
-    wsManager.sendGameMove(
-      roomId,
-      fromX,
-      fromY,
-      toX,
-      toY,
-      moveId,
-      isHalfMove || false
-    );
-    /*
+    wsManager.sendGameMove(roomId, fromX, fromY, toX, toY, moveId);
+
     toaster.create({
-      title: isHalfMove || false ? "半移动命令已发送" : "移动命令已发送",
-      description: `从 (${fromX},${fromY}) ${isHalfMove || false ? "半移动" : "移动"}到 (${toX},${toY})`,
+      title: "移动命令已发送",
+      description: `从 (${fromX},${fromY}) 移动到 (${toX},${toY})`,
       type: "success",
       duration: 1000,
     });
-    */
   };
 
   // 键盘控制移动
@@ -764,125 +1059,12 @@ const GamePage: React.FC = () => {
     const currentTeam = playerTeamRef.current;
     const hasGameData = currentMap.length > 0 && currentTeam;
 
-    // 全局快捷键（不需要游戏状态检查）
-    switch (event.key.toLowerCase()) {
-      case "t": // T键控制聊天框焦点
-        event.preventDefault();
-        if (multiChatRef.current) {
-          if (multiChatRef.current.isInputFocused()) {
-            multiChatRef.current.blurInput();
-          } else {
-            multiChatRef.current.focusInput();
-          }
-        }
-        return;
-      case "o": // O键放大地图
-        event.preventDefault();
-        handleZoomIn();
-        return;
-      case "i": // I键缩小地图
-        event.preventDefault();
-        handleZoomOut();
-        return;
-      case "z": // Z键切换当前分半模式
-        event.preventDefault();
-        setIsHalfMode((prev) => {
-          const newState = !prev;
-          toaster.create({
-            title: newState ? "分半模式开启" : "分半模式关闭",
-            description: newState
-              ? "当前移动将使用分半模式"
-              : "当前移动将正常发送",
-            type: "info",
-            duration: 2000,
-          });
-          return newState;
-        });
-        return;
-      case "q": // Q键清空所有移动缓存
-        event.preventDefault();
-        clearAllMoveTracks();
-        /*
-        toaster.create({
-          title: "清空缓存",
-          description: "已清空所有移动缓存",
-          type: "info",
-          duration: 1000,
-        });
-        */
-        return;
-      case "e": // E键删除上一步缓存移动
-        event.preventDefault();
-        setMoveTracks((prev) => {
-          if (prev.length > 0) {
-            const lastTrack = prev[prev.length - 1];
-            if (lastTrack && lastTrack.moves && lastTrack.moves.length > 0) {
-              if (lastTrack.moves.length === 1) {
-                // 如果轨迹只有一个移动，删除整个轨迹，回退到轨迹起点
-                const firstMove = lastTrack.moves[0];
-                setSelectedTile({ x: firstMove.from_x, y: firstMove.from_y });
-
-                const newTracks = prev.slice(0, -1);
-                moveTracksRef.current = newTracks;
-                /*
-                toaster.create({
-                  title: "删除移动轨迹",
-                  description: `已删除最后一条移动轨迹，回退到起点 (${firstMove.from_x},${firstMove.from_y})`,
-                  type: "info",
-                  duration: 1000,
-                });
-                */
-                return newTracks;
-              } else {
-                // 如果轨迹有多个移动，只删除最后一个移动，回退到上一步的终点
-                const lastMove = lastTrack.moves[lastTrack.moves.length - 1];
-                const previousMove =
-                  lastTrack.moves[lastTrack.moves.length - 2];
-                setSelectedTile({ x: lastMove.from_x, y: lastMove.from_y });
-
-                const newTracks = [...prev];
-                newTracks[newTracks.length - 1] = {
-                  ...lastTrack,
-                  moves: lastTrack.moves.slice(0, -1),
-                };
-                moveTracksRef.current = newTracks;
-                /*
-                toaster.create({
-                  title: "删除移动",
-                  description: `已删除最后一步移动，回退到 (${lastMove.from_x},${lastMove.from_y})`,
-                  type: "info",
-                  duration: 1000,
-                });
-                */
-                return newTracks;
-              }
-            }
-          } /*
-          toaster.create({
-            title: "无可删除移动",
-            description: "当前没有缓存的移动可删除",
-            type: "warning",
-            duration: 1000,
-          });
-          */
-          return prev;
-        });
-        return;
-    }
-
-    // 需要游戏状态和选中tile的快捷键
     if (
       (!currentGameStarted && !hasGameData) ||
       currentGameEnded ||
       !selectedTile
     )
       return;
-
-    // 计算当前地图的动态边界
-    const mapWidth =
-      currentMap.length > 0 ? Math.max(...currentMap.map((t) => t.x)) + 1 : 10;
-    const mapHeight =
-      currentMap.length > 0 ? Math.max(...currentMap.map((t) => t.y)) + 1 : 10;
 
     let newX = selectedTile.x;
     let newY = selectedTile.y;
@@ -894,7 +1076,7 @@ const GamePage: React.FC = () => {
         break;
       case "s": // 向下移动
       case "arrowdown":
-        newY = Math.min(mapHeight - 1, selectedTile.y + 1);
+        newY = Math.min(9, selectedTile.y + 1);
         break;
       case "a": // 向左移动
       case "arrowleft":
@@ -902,11 +1084,10 @@ const GamePage: React.FC = () => {
         break;
       case "d": // 向右移动
       case "arrowright":
-        newX = Math.min(mapWidth - 1, selectedTile.x + 1);
+        newX = Math.min(9, selectedTile.x + 1);
         break;
       case "escape": // ESC 取消选择
         cancelTrackConstruction();
-        setMarkedTile(null); // 同时清除标记
         return;
       case "c": // C 键清空队列
         clearAllMoveTracks();
@@ -931,149 +1112,7 @@ const GamePage: React.FC = () => {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [selectedTile, gameStarted, gameEnded, isHalfMode]);
-
-  // 缩放控制函数
-  const handleZoomIn = () => {
-    setMapZoom((prevZoom) => {
-      const newZoom = Math.min(3, prevZoom + 0.2);
-      localStorage.setItem(`mapZoom_${roomId}`, newZoom.toString());
-      return newZoom;
-    });
-    setUserHasZoomed(true);
-    localStorage.setItem(`userHasZoomed_${roomId}`, "true");
-  };
-
-  const handleZoomOut = () => {
-    setMapZoom((prevZoom) => {
-      const newZoom = Math.max(0.3, prevZoom - 0.2);
-      localStorage.setItem(`mapZoom_${roomId}`, newZoom.toString());
-      return newZoom;
-    });
-    setUserHasZoomed(true);
-    localStorage.setItem(`userHasZoomed_${roomId}`, "true");
-  };
-
-  const handleZoomReset = () => {
-    // 重置到自动计算的缩放倍数，但保持当前的地图偏移位置
-    let newZoom: number;
-    if (gameMap.length > 0) {
-      const mapWidth = Math.max(...gameMap.map((t) => t.x)) + 1;
-      const mapHeight = Math.max(...gameMap.map((t) => t.y)) + 1;
-      const autoZoom = calculateAutoZoom(mapWidth, mapHeight);
-      newZoom = autoZoom;
-      setMapZoom(autoZoom);
-      // 不再重置地图偏移，保持用户拖拽后的位置
-    } else {
-      newZoom = 1;
-      setMapZoom(1);
-      // 不再重置地图偏移，保持用户拖拽后的位置
-    }
-    localStorage.setItem(`mapZoom_${roomId}`, newZoom.toString());
-    setUserHasZoomed(true);
-    localStorage.setItem(`userHasZoomed_${roomId}`, "true");
-  };
-
-  // 地图拖拽处理函数 - 实现真正的地图移动，不恢复位置
-  const handleMapMouseDown = (event: React.MouseEvent) => {
-    // 只有在地图容器上按下鼠标时才开始拖拽
-    const target = event.target as HTMLElement;
-    if (
-      target.closest("[data-map-container]") ||
-      target.closest("[data-map-area]")
-    ) {
-      setIsDragging(true);
-      setDragStart({ x: event.clientX, y: event.clientY });
-      event.preventDefault();
-    }
-  };
-
-  const handleMapMouseMove = (event: React.MouseEvent) => {
-    if (isDragging && dragStart) {
-      const deltaX = event.clientX - dragStart.x;
-      const deltaY = event.clientY - dragStart.y;
-
-      // 由于transform顺序是 scale() translate()，平移会被缩放影响
-      // 所以需要除以缩放倍率来保持相同的视觉移动距离
-      const adjustedDeltaX = deltaX / mapZoom;
-      const adjustedDeltaY = deltaY / mapZoom;
-
-      setMapOffset((prev) => ({
-        x: prev.x + adjustedDeltaX,
-        y: prev.y + adjustedDeltaY,
-      }));
-
-      setDragStart({ x: event.clientX, y: event.clientY });
-    }
-  };
-
-  const handleMapMouseUp = () => {
-    setIsDragging(false);
-    setDragStart(null);
-  };
-
-  // 鼠标滚轮缩放处理函数
-  const handleWheel = (event: React.WheelEvent) => {
-    event.preventDefault();
-
-    // 获取滚轮方向，向上为正（放大），向下为负（缩小）
-    const delta = -event.deltaY;
-    const zoomFactor = 0.1;
-
-    if (delta > 0) {
-      // 向上滚动，放大
-      setMapZoom((prevZoom) => {
-        const newZoom = Math.min(4, prevZoom + zoomFactor);
-        localStorage.setItem(`mapZoom_${roomId}`, newZoom.toString());
-        return newZoom;
-      });
-    } else {
-      // 向下滚动，缩小
-      setMapZoom((prevZoom) => {
-        const newZoom = Math.max(0.2, prevZoom - zoomFactor);
-        localStorage.setItem(`mapZoom_${roomId}`, newZoom.toString());
-        return newZoom;
-      });
-    }
-    setUserHasZoomed(true);
-    localStorage.setItem(`userHasZoomed_${roomId}`, "true");
-  };
-
-  // 监听全局鼠标事件以处理拖拽
-  useEffect(() => {
-    const handleGlobalMouseMove = (event: MouseEvent) => {
-      if (isDragging && dragStart) {
-        const deltaX = event.clientX - dragStart.x;
-        const deltaY = event.clientY - dragStart.y;
-
-        // 应用缩放调整，保持视觉移动距离一致
-        const adjustedDeltaX = deltaX / mapZoom;
-        const adjustedDeltaY = deltaY / mapZoom;
-
-        setMapOffset((prev) => ({
-          x: prev.x + adjustedDeltaX,
-          y: prev.y + adjustedDeltaY,
-        }));
-
-        setDragStart({ x: event.clientX, y: event.clientY });
-      }
-    };
-
-    const handleGlobalMouseUp = () => {
-      setIsDragging(false);
-      setDragStart(null);
-    };
-
-    if (isDragging) {
-      document.addEventListener("mousemove", handleGlobalMouseMove);
-      document.addEventListener("mouseup", handleGlobalMouseUp);
-    }
-
-    return () => {
-      document.removeEventListener("mousemove", handleGlobalMouseMove);
-      document.removeEventListener("mouseup", handleGlobalMouseUp);
-    };
-  }, [isDragging, dragStart]);
+  }, [selectedTile, gameStarted, gameEnded]);
 
   // 检查移动是否合法（只能移动到相邻格子）
   const isValidMove = (
@@ -1102,11 +1141,6 @@ const GamePage: React.FC = () => {
       playerGroupId,
       match: tile.userId === playerTeam,
     });
-
-    // 允许选择未知块用于构建移动缓存
-    if (tile.type === "unknown") {
-      return true;
-    }
 
     // 只能选择自己控制的领地(t)、王城(g)或城市(c)，且需要有足够兵力移动
     if (tile.type === "t" || tile.type === "g" || tile.type === "c") {
@@ -1144,7 +1178,6 @@ const GamePage: React.FC = () => {
     // 检查点击的格子类型，山和占位符不能被点击
     const clickedTile = gameMap.find((tile) => tile.x === x && tile.y === y);
     if (clickedTile && (clickedTile.type === "m" || clickedTile.type === "v")) {
-      /*
       toaster.create({
         title: "无法操作",
         description:
@@ -1152,7 +1185,6 @@ const GamePage: React.FC = () => {
         type: "warning",
         duration: 2000,
       });
-      */
       return;
     }
 
@@ -1186,32 +1218,13 @@ const GamePage: React.FC = () => {
 
       setSelectedTile({ x, y });
       setIsConstructingTrack(true);
-      /*
       toaster.create({
         title: "选择起点",
         description: `已选择起点 (${x},${y})，请选择目标位置`,
         type: "info",
         duration: 1500,
       });
-      */
     } else {
-      // 检查是否点击的是已选中的tile
-      if (selectedTile.x === x && selectedTile.y === y) {
-        // 点击已选中的tile，切换分半模式
-        setIsHalfMode((prev) => {
-          const newState = !prev;
-          toaster.create({
-            title: newState ? "分半模式开启" : "分半模式关闭",
-            description: newState
-              ? "下一次移动将使用分半模式"
-              : "下一次移动将正常发送",
-            type: "info",
-            duration: 1500,
-          });
-          return newState;
-        });
-        return;
-      }
       // 检查是否与当前选择的位置相邻
       const isAdjacent = isValidMove(selectedTile.x, selectedTile.y, x, y);
 
@@ -1231,14 +1244,12 @@ const GamePage: React.FC = () => {
         setSelectedTile({ x, y });
         setIsConstructingTrack(true);
 
-        /*
         toaster.create({
           title: "重新选择起点",
           description: `位置不相邻，已将 (${x},${y}) 设为新起点`,
           type: "info",
           duration: 1500,
         });
-        */
         return;
       }
 
@@ -1250,13 +1261,7 @@ const GamePage: React.FC = () => {
         to_y: y,
         move_id: genMoveId(),
         timestamp: Date.now(),
-        isHalfMove: isHalfMode, // 使用当前分半模式状态
       };
-
-      // 如果使用了分半模式，创建移动后自动关闭分半模式
-      if (isHalfMode) {
-        setIsHalfMode(false);
-      }
 
       // 检查是否可以添加到现有轨迹 - 使用ref获取最新状态
       const currentMoveTracks = moveTracksRef.current;
@@ -1339,14 +1344,14 @@ const GamePage: React.FC = () => {
         "当前移动轨迹数量:",
         moveTracksRef.current.length + (shouldCreateNewTrack ? 1 : 0)
       );
-      /*
+
       toaster.create({
         title: "添加移动",
         description: `从 (${selectedTile.x},${selectedTile.y}) 到 (${x},${y})`,
         type: "success",
         duration: 1000,
       });
-      */
+
       // 将目标位置设为新的起始位置，方便连续移动
       setSelectedTile({ x, y });
     }
@@ -1354,12 +1359,10 @@ const GamePage: React.FC = () => {
 
   // 获取格子在地图中的像素位置
   const getTilePosition = (x: number, y: number) => {
-    // 使用固定的tile大小，与地图渲染逻辑保持一致
-    const baseTileSize = 60; // 固定60px
-    // SVG覆盖层不应用缩放，所以这里不乘以mapZoom
+    const tileSize = 60; // 600px / 10 = 60px per tile
     return {
-      x: x * baseTileSize + baseTileSize / 2, // 中心位置
-      y: y * baseTileSize + baseTileSize / 2,
+      x: x * tileSize + tileSize / 2, // 中心位置
+      y: y * tileSize + tileSize / 2,
     };
   };
 
@@ -1512,12 +1515,6 @@ const GamePage: React.FC = () => {
         return "gray.400"; // 山，使用浅灰色与未探过的城市保持一致
       case "v":
         return "transparent"; // 空白，完全透明
-      case "gl":
-        return "gray.300"; // 灰地，中等灰色
-      case "gg":
-        return "gray.400"; // 灰色王城，深灰色（类似山）
-      case "unknown":
-        return "gray.400"; // 未知地形，与山保持一致
       default:
         return "gray.100";
     }
@@ -1538,7 +1535,7 @@ const GamePage: React.FC = () => {
               transform="translate(-50%, -50%)"
               color="white"
               fontWeight="bold"
-              fontSize="md"
+              fontSize="sm"
               zIndex={2}
             >
               {tile.count}
@@ -1549,7 +1546,7 @@ const GamePage: React.FC = () => {
         return (
           <Box position="relative" w="100%" h="100%">
             <LuLandPlot
-              size={42}
+              size={28}
               color="#3a3a3c"
               style={{
                 position: "absolute",
@@ -1566,7 +1563,7 @@ const GamePage: React.FC = () => {
               transform="translate(-50%, -50%)"
               color="white"
               fontWeight="bold"
-              fontSize="md"
+              fontSize="sm"
               zIndex={2}
             >
               {tile.count}
@@ -1574,40 +1571,82 @@ const GamePage: React.FC = () => {
           </Box>
         );
       case "c":
-        // 城市 - 只有在有视野时才显示为城市，否则显示为未知地形
-        if (!tile.hasVision) {
-          // 没有视野时，显示为未知地形（与未探索的山相同，防止作弊）
-          return (
-            <Box position="relative" w="100%" h="100%">
-              <LuMountain
-                size={36}
-                color="gray.500"
-                style={{
-                  position: "absolute",
-                  top: "55%",
-                  left: "45%",
-                  transform: "translate(-50%, -50%)",
-                }}
-              />
-              <Text
-                position="absolute"
-                top="15%"
-                right="15%"
-                color="gray.600"
-                fontSize="lg"
-                fontWeight="bold"
-                zIndex={2}
-              >
-                ?
-              </Text>
-            </Box>
-          );
-        }
-
-        // 有视野时，显示城市图标和兵力数
+        // 城市
+        // 获取已发现的城市类型
         const key = `${tile.x},${tile.y}`;
         const discoveredType = discoveredCities.get(key);
 
+        // 如果没有视野，检查是否曾经被发现过
+        if (!tile.hasVision) {
+          // 如果曾经被发现过，显示对应的城市图标
+          if (discoveredType) {
+            return (
+              <Box position="relative" w="100%" h="100%">
+                <Box
+                  position="absolute"
+                  top="50%"
+                  left="50%"
+                  transform="translate(-50%, -50%)"
+                  zIndex={1}
+                >
+                  {(() => {
+                    switch (discoveredType) {
+                      case "settlement":
+                        return <LuTent size={42} color="gray.600" />;
+                      case "smallcity":
+                        return <LuHotel size={42} color="gray.600" />;
+                      case "largecity":
+                        return <LuLandmark size={42} color="gray.600" />;
+                      default:
+                        return <LuTent size={42} color="gray.600" />;
+                    }
+                  })()}
+                </Box>
+                <Text
+                  position="absolute"
+                  top="50%"
+                  left="50%"
+                  transform="translate(-50%, -50%)"
+                  color="white"
+                  fontWeight="bold"
+                  fontSize="sm"
+                  zIndex={2}
+                >
+                  ?
+                </Text>
+              </Box>
+            );
+          } else {
+            // 从未被发现过，显示为普通山（与未探过山tile完全一样）
+            return (
+              <Box position="relative" w="100%" h="100%">
+                <LuMountain
+                  size={36}
+                  color="gray.500"
+                  style={{
+                    position: "absolute",
+                    top: "55%",
+                    left: "45%",
+                    transform: "translate(-50%, -50%)",
+                  }}
+                />
+                <Text
+                  position="absolute"
+                  top="15%"
+                  right="15%"
+                  color="gray.600"
+                  fontSize="sm"
+                  fontWeight="bold"
+                  zIndex={2}
+                >
+                  ?
+                </Text>
+              </Box>
+            );
+          }
+        }
+
+        // 有视野时，显示城市图标和兵力数
         return (
           <Box position="relative" w="100%" h="100%">
             <Box
@@ -1638,7 +1677,7 @@ const GamePage: React.FC = () => {
               transform="translate(-50%, -50%)"
               color="white"
               fontWeight="bold"
-              fontSize="md"
+              fontSize="sm"
               zIndex={2}
             >
               {tile.count}
@@ -1669,7 +1708,7 @@ const GamePage: React.FC = () => {
                 top="15%"
                 right="15%"
                 color="gray.600"
-                fontSize="lg"
+                fontSize="sm"
                 fontWeight="bold"
                 zIndex={2}
               >
@@ -1678,82 +1717,8 @@ const GamePage: React.FC = () => {
             </Box>
           );
         }
-      case "gl":
-        // 灰地 - 显示兵力数但无所有者标识
-        return (
-          <Box position="relative" w="100%" h="100%">
-            <Text
-              position="absolute"
-              top="50%"
-              left="50%"
-              transform="translate(-50%, -50%)"
-              color="gray.600"
-              fontWeight="bold"
-              fontSize="md"
-              zIndex={2}
-            >
-              {tile.count}
-            </Text>
-          </Box>
-        );
-      case "gg":
-        // 灰色王城 - 显示为塔状建筑
-        return (
-          <Box position="relative" w="100%" h="100%">
-            <LuBuilding2
-              size={42}
-              color="gray.500"
-              style={{
-                position: "absolute",
-                top: "50%",
-                left: "50%",
-                transform: "translate(-50%, -50%)",
-                zIndex: 1,
-              }}
-            />
-            <Text
-              position="absolute"
-              top="50%"
-              left="50%"
-              transform="translate(-50%, -50%)"
-              color="white"
-              fontWeight="bold"
-              fontSize="md"
-              zIndex={2}
-            >
-              {tile.count}
-            </Text>
-          </Box>
-        );
       case "v":
         return "";
-      case "unknown":
-        // 未知地形（无视野的山或城市）- 统一显示为山+问号
-        return (
-          <Box position="relative" w="100%" h="100%">
-            <LuMountain
-              size={36}
-              color="gray.500"
-              style={{
-                position: "absolute",
-                top: "55%",
-                left: "45%",
-                transform: "translate(-50%, -50%)",
-              }}
-            />
-            <Text
-              position="absolute"
-              top="15%"
-              right="15%"
-              color="gray.600"
-              fontSize="lg"
-              fontWeight="bold"
-              zIndex={2}
-            >
-              ?
-            </Text>
-          </Box>
-        );
       default:
         return "?";
     }
@@ -1770,7 +1735,18 @@ const GamePage: React.FC = () => {
             // 存储房间信息
             setRoomInfo(message);
 
-            // 不再设置模拟兵力数据，等待后端 map_update 消息中的真实数据
+            // 尝试从房间信息中设置玩家兵力数据
+            if (message.players && playerPowers.length === 0) {
+              const mockPlayerPowers: PlayerPowerData[] = message.players
+                .filter((player: any) => player.group_id < 8) // 排除观众
+                .map((player: any) => ({
+                  username: player.username || `玩家${player.group_id}`,
+                  groupId: player.group_id,
+                  totalPower: Math.floor(Math.random() * 100) + 50, // 临时随机兵力
+                }));
+              console.log("从 room_info 设置玩家兵力数据:", mockPlayerPowers);
+              setPlayerPowers(mockPlayerPowers);
+            }
 
             // 检查房间状态，如果是playing说明游戏正在进行
             if (message.room_id == roomId && message.status === "playing") {
@@ -1779,11 +1755,9 @@ const GamePage: React.FC = () => {
               setGameEnded(false);
             } else if (
               message.room_id == roomId &&
-              message.status !== "playing" &&
-              !hasShownNoGameToast
+              message.status !== "playing"
             ) {
               console.log("游戏未开始，房间状态:", message.status);
-              setHasShownNoGameToast(true); // 标记已显示过toaster
               // 游戏不在进行中，返回房间页面
               toaster.create({
                 title: "游戏未开始",
@@ -1845,7 +1819,20 @@ const GamePage: React.FC = () => {
                 setGameEnded(false);
               }
 
-              // 不再设置模拟兵力数据，等待后端 map_update 消息中的真实数据
+              // 临时模拟数据 - 实际应由后端提供
+              if (playerPowers.length === 0) {
+                // 从房间信息获取玩家数据（如果有的话）
+                if (roomInfo && roomInfo.players) {
+                  const mockPlayerPowers: PlayerPowerData[] = roomInfo.players
+                    .filter((player: any) => player.group_id < 8) // 排除观众
+                    .map((player: any, index: number) => ({
+                      username: player.username || `玩家${player.group_id}`,
+                      groupId: player.group_id,
+                      totalPower: Math.floor(Math.random() * 100) + 50, // 临时随机兵力
+                    }));
+                  setPlayerPowers(mockPlayerPowers);
+                }
+              }
             }
             break;
 
@@ -1888,42 +1875,6 @@ const GamePage: React.FC = () => {
 
               // 立即更新地图，确保权威数据覆盖乐观更新
               setGameMap(newMap);
-
-              // 自动设置合适的缩放倍数（仅在首次加载且用户没有手动调整缩放时）
-              // 检查localStorage中是否有用户的缩放设置
-              const savedUserHasZoomed =
-                localStorage.getItem(`userHasZoomed_${roomId}`) === "true";
-              const savedAutoZoomApplied =
-                localStorage.getItem(`autoZoomApplied_${roomId}`) === "true";
-
-              if (
-                !autoZoomApplied &&
-                !userHasZoomed &&
-                !savedUserHasZoomed &&
-                !savedAutoZoomApplied &&
-                newMap.length > 0
-              ) {
-                const mapWidth = Math.max(...newMap.map((t) => t.x)) + 1;
-                const mapHeight = Math.max(...newMap.map((t) => t.y)) + 1;
-
-                const autoZoom = calculateAutoZoom(mapWidth, mapHeight);
-                console.log(
-                  `自动缩放计算: 地图尺寸 ${mapWidth}x${mapHeight}, 缩放倍数 ${autoZoom.toFixed(2)}`
-                );
-
-                // 使用 setTimeout 避免在渲染过程中设置状态
-                setTimeout(() => {
-                  setMapZoom(autoZoom);
-                  localStorage.setItem(
-                    `mapZoom_${roomId}`,
-                    autoZoom.toString()
-                  );
-                  setAutoZoomApplied(true);
-                  localStorage.setItem(`autoZoomApplied_${roomId}`, "true");
-                  // 只在首次加载时重置地图偏移，之后保持用户的拖拽位置
-                  // setMapOffset({ x: 0, y: 0 });
-                }, 100);
-              }
 
               // 记录已发现的城市类型 - 只有当前有视野的城市才记录
               setDiscoveredCities((prev) => {
@@ -2022,47 +1973,20 @@ const GamePage: React.FC = () => {
                       console.log("地图更新后，当前轨迹不可执行，删除整个轨迹");
                       const updatedTracks = prev.slice(1);
                       moveTracksRef.current = updatedTracks;
-                      /*
+
                       toaster.create({
                         title: "轨迹失效",
                         description: "地图更新后当前轨迹不可执行，已自动删除",
                         type: "warning",
                         duration: 2000,
                       });
-                      */
+
                       return updatedTracks;
                     }
                   }
                 }
                 return prev;
               });
-
-              // 处理玩家兵力数据
-              if (
-                message.player_powers &&
-                Array.isArray(message.player_powers)
-              ) {
-                const newPlayerPowers: PlayerPowerData[] =
-                  message.player_powers.map(
-                    ([username, groupId, totalPower, status]: [
-                      string,
-                      number,
-                      number,
-                      string,
-                    ]) => ({
-                      username,
-                      groupId,
-                      totalPower,
-                      status: status as
-                        | "active"
-                        | "defeated"
-                        | "disconnected"
-                        | "offline",
-                    })
-                  );
-                console.log("从 map_update 更新玩家兵力数据:", newPlayerPowers);
-                setPlayerPowers(newPlayerPowers);
-              }
 
               // 更新玩家队伍信息（从 wsManager 获取，而不是推断）
               if (roomId) {
@@ -2168,162 +2092,41 @@ const GamePage: React.FC = () => {
   }
 
   return (
-    <Box
-      w="100vw"
-      h="100vh"
-      bg="gray.50"
-      overflow="hidden"
-      position="fixed" // 固定整个游戏页面
-      top="0"
-      left="0"
-      zIndex={1000} // 确保覆盖其他所有内容
-      data-game-page // 添加标识符用于设置焦点
-      tabIndex={-1} // 使其能够接收焦点
-      outline="none" // 移除焦点轮廓
-    >
-      {/* 游戏内容区域 - 全屏地图（移除顶部导航条） */}
-      <Box w="full" h="100vh" position="relative" overflow="hidden">
-        {/* 快捷键指南 - 左下角 */}
-        <Box
-          position="fixed" // 改为fixed定位
-          bottom="20px"
-          left="20px"
-          bg="rgba(255, 255, 255, 0.95)"
-          border="1px solid rgba(0, 0, 0, 0.1)"
-          borderRadius="8px"
-          p={3}
-          fontSize="xs"
-          color="gray.700"
-          zIndex={9999} // 设置最高z-index
-        >
-          <Text fontWeight="bold" mb={2} fontSize="sm">
-            快捷键
-          </Text>
-          <VStack gap={1} align="start" fontSize="xs">
-            <Text>
-              <strong>滚轮</strong> - 放大/缩小地图
-            </Text>
-            <Text>
-              <strong>O/I</strong> - 放大/缩小地图
-            </Text>
-            <Text>
-              <strong>拖拽</strong> - 移动地图视角
-            </Text>
-            <Text>
-              <strong>Z</strong> - 当前移动分半
-            </Text>
-            <Text>
-              <strong>Q</strong> - 清空所有缓存
-            </Text>
-            <Text>
-              <strong>E</strong> - 删除上一步移动
-            </Text>
-            <Text>
-              <strong>WASD</strong> - 移动选择
-            </Text>
-            <Text>
-              <strong>ESC</strong> - 取消选择
-            </Text>
-            <Text fontSize="xs" color="gray.500" mt={2}>
-              缩放: {mapZoom.toFixed(1)}x
-            </Text>
-          </VStack>
-        </Box>
+    <Box w="100vw" h="100vh" bg="gray.50" overflow="hidden">
+      {/* 顶部导航条 */}
+      <Box
+        w="full"
+        h="60px"
+        bg="white"
+        borderBottom="1px solid"
+        borderColor="gray.200"
+        boxShadow="0 1px 3px rgba(0, 0, 0, 0.1)"
+        px={6}
+        display="flex"
+        alignItems="center"
+        justifyContent="space-between"
+        position="relative"
+        zIndex={10}
+      >
+        <HStack gap={4}>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleBackToRoom}
+            disabled={gameStarted && !gameEnded}
+          >
+            <LuArrowLeft />
+            返回房间
+          </Button>
+          <Heading size="lg">房间 {roomId} - 游戏中</Heading>
+        </HStack>
 
-        {/* 地图缩放控制 - 聊天组件左侧横向布局 */}
-        <Box
-          position="fixed" // 改为fixed定位
-          bottom="20px"
-          height={"45px"}
-          right="340px" // 聊天组件宽度(300px) + 间距(20px) + 额外间距(20px)
-          bg="rgba(255, 255, 255, 0.95)"
-          border="1px solid rgba(0, 0, 0, 0.1)"
-          borderRadius="8px"
-          p={2}
-          zIndex={9999} // 设置最高z-index
-          display="flex"
-          alignItems="center" // 垂直居中对齐
-        >
-          <HStack gap={2} align="center" h="full">
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={handleZoomOut}
-              disabled={mapZoom <= 0.3}
-              title="缩小地图"
-              minW="32px"
-            >
-              −
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={handleZoomReset}
-              title="自动适应"
-              fontSize="xs"
-              minW="40px"
-            >
-              自动
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={handleZoomIn}
-              disabled={mapZoom >= 3}
-              title="放大地图"
-              minW="32px"
-            >
-              +
-            </Button>
-          </HStack>
-        </Box>
+        {/* 右上角玩家兵力显示 - 简化显示条件 */}
+        <PlayerPowerDisplay playerPowers={playerPowers} roomInfo={roomInfo} />
+      </Box>
 
-        {/* 右上角返回按钮和房间信息 */}
-        <Box position="fixed" top="20px" right="20px" zIndex={9999}>
-          <HStack gap={4}>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleBackToRoom}
-              disabled={gameStarted && !gameEnded}
-              bg="rgba(255, 255, 255, 0.95)"
-            >
-              <LuArrowLeft />
-              返回房间
-            </Button>
-
-            {/* 分半模式指示器 */}
-            {gameStarted && !gameEnded && !isObserver && isHalfMode && (
-              <Badge
-                size="lg"
-                variant="solid"
-                colorPalette="purple"
-                px={3}
-                py={1}
-                borderRadius="full"
-                fontSize="sm"
-                fontWeight="bold"
-              >
-                分半模式
-              </Badge>
-            )}
-          </HStack>
-        </Box>
-
-        {/* 右上角玩家兵力显示 */}
-        <Box
-          position="fixed"
-          top="20px" // 在返回按钮下方
-          right="0px"
-          zIndex={9999}
-        >
-          <PlayerPowerRanking
-            playerPowers={playerPowers}
-            roomInfo={roomInfo}
-            currentUsername={user?.username}
-          />
-        </Box>
-
+      {/* 游戏内容区域 - 全屏地图 */}
+      <Box w="full" h="calc(100vh - 60px)" position="relative">
         {!gameStarted && !gameEnded && (
           <Box
             position="absolute"
@@ -2356,214 +2159,194 @@ const GamePage: React.FC = () => {
             display="flex"
             alignItems="center"
             justifyContent="center"
-            overflow="hidden" // 防止缩放时内容溢出
-            onMouseDown={handleMapMouseDown}
-            onMouseMove={handleMapMouseMove}
-            onMouseUp={handleMapMouseUp}
-            onWheel={handleWheel} // 添加滚轮事件处理
-            cursor={isDragging ? "grabbing" : "grab"}
-            userSelect="none" // 防止拖拽时选中文本
           >
             {gameMap.length > 0 ? (
-              <Box
-                data-map-container
-                position="relative"
-                transform={`scale(${mapZoom}) translate(${mapOffset.x}px, ${mapOffset.y}px)`}
-                transformOrigin="center"
-                transition={isDragging ? "none" : "transform 0.1s ease-out"}
-              >
-                {(() => {
-                  // 计算动态地图大小
-                  const mapWidth =
-                    gameMap.length > 0
-                      ? Math.max(...gameMap.map((t) => t.x)) + 1
-                      : 10;
-                  const mapHeight =
-                    gameMap.length > 0
-                      ? Math.max(...gameMap.map((t) => t.y)) + 1
-                      : 10;
-                  const totalTiles = mapWidth * mapHeight;
+              <Box data-map-area position="relative">
+                <Box
+                  display="grid"
+                  gridTemplateColumns="repeat(10, 1fr)"
+                  gridTemplateRows="repeat(10, 1fr)"
+                  gap={0}
+                  width="600px"
+                  height="600px"
+                  border="none"
+                  data-map-area
+                  position="relative"
+                >
+                  {Array.from({ length: 100 }, (_, i) => {
+                    const x = i % 10;
+                    const y = Math.floor(i / 10);
+                    const tile = gameMap.find((t) => t.x === x && t.y === y);
 
-                  // 固定tile大小以适配icon和数字显示
-                  const baseTileSize = 60; // 固定60px，适合icon和数字显示
+                    // 检查是否是void位置（硬编码的void位置）
+                    const isVoidPosition =
+                      (x === 0 && y === 0) ||
+                      (x === 9 && y === 0) ||
+                      (x === 0 && y === 9) ||
+                      (x === 9 && y === 9);
 
-                  // 计算容器的实际大小
-                  const containerWidth = mapWidth * baseTileSize;
-                  const containerHeight = mapHeight * baseTileSize;
+                    if (isVoidPosition) {
+                      // void位置渲染为完全透明，不占用空间，形成凹陷效果
+                      return (
+                        <Box
+                          key={i}
+                          bg="transparent"
+                          border="none"
+                          display="block" // 占用grid空间但不显示内容
+                          cursor="default"
+                          position="relative"
+                        >
+                          {/* 完全空白，形成凹陷效果 */}
+                        </Box>
+                      );
+                    }
 
-                  return (
-                    <Box
-                      display="grid"
-                      gridTemplateColumns={`repeat(${mapWidth}, 1fr)`}
-                      gridTemplateRows={`repeat(${mapHeight}, 1fr)`}
-                      gap={0}
-                      width={`${containerWidth}px`}
-                      height={`${containerHeight}px`}
-                      border="none"
-                      data-map-area
-                      position="relative"
-                    >
-                      {Array.from({ length: totalTiles }, (_, i) => {
-                        const x = i % mapWidth;
-                        const y = Math.floor(i / mapWidth);
-                        const tile = gameMap.find(
-                          (t) => t.x === x && t.y === y
-                        );
+                    if (!tile) {
+                      // 为非void的位置添加外边框
+                      const borderStyles = {
+                        borderTop:
+                          y === 0 || isVoidPosition
+                            ? "2px solid gray.600"
+                            : "1px solid gray.400",
+                        borderLeft:
+                          x === 0 || isVoidPosition
+                            ? "2px solid gray.600"
+                            : "1px solid gray.400",
+                        borderRight:
+                          x === 9 ||
+                          (x === 8 && y === 0) ||
+                          (x === 8 && y === 9)
+                            ? "2px solid gray.600"
+                            : "1px solid gray.400",
+                        borderBottom:
+                          y === 9 ||
+                          (y === 8 && x === 0) ||
+                          (y === 8 && x === 9)
+                            ? "2px solid gray.600"
+                            : "1px solid gray.400",
+                      };
 
-                        if (!tile) {
-                          // 没有tile数据的位置显示为荒野
-                          return (
-                            <Box
-                              key={i}
-                              bg="gray.500"
-                              border="1px solid"
-                              borderColor="gray.400"
-                              display="flex"
-                              alignItems="center"
-                              justifyContent="center"
-                              fontSize="sm"
-                              color="gray.400"
-                              cursor="default"
-                              position="relative"
-                            />
-                          );
-                        }
+                      return (
+                        <Box
+                          key={i}
+                          bg="gray.500"
+                          {...borderStyles}
+                          display="flex"
+                          alignItems="center"
+                          justifyContent="center"
+                          fontSize="xs"
+                          color="gray.400"
+                        ></Box>
+                      );
+                    }
 
-                        // 计算边框样式（基于动态地图边界）
-                        const isAtMapEdge = {
-                          top: y === 0,
-                          left: x === 0,
-                          right: x === mapWidth - 1,
-                          bottom: y === mapHeight - 1,
-                        };
+                    // 计算边框样式，考虑void区域的影响
+                    const isAtMapEdge = {
+                      top: y === 0 || (y === 1 && (x === 0 || x === 9)), // 地图顶部或与void相邻
+                      left: x === 0 || (x === 1 && (y === 0 || y === 9)), // 地图左侧或与void相邻
+                      right: x === 9 || (x === 8 && (y === 0 || y === 9)), // 地图右侧或与void相邻
+                      bottom: y === 9 || (y === 8 && (x === 0 || x === 9)), // 地图底部或与void相邻
+                    };
 
-                        const borderWidth = {
-                          top: isAtMapEdge.top ? "2px" : "1px",
-                          left: isAtMapEdge.left ? "2px" : "1px",
-                          right: isAtMapEdge.right ? "2px" : "1px",
-                          bottom: isAtMapEdge.bottom ? "2px" : "1px",
-                        };
-
-                        return (
-                          <Box
-                            key={i}
-                            bg={getTileColor(tile)}
-                            borderTop={`${borderWidth.top} solid`}
-                            borderLeft={`${borderWidth.left} solid`}
-                            borderRight={`${borderWidth.right} solid`}
-                            borderBottom={`${borderWidth.bottom} solid`}
-                            borderColor={
-                              selectedTile &&
-                              selectedTile.x === x &&
-                              selectedTile.y === y
-                                ? isHalfMode
-                                  ? "#4cd1e0" // 分半模式使用亮蓝色边框
-                                  : "gold" // 正常模式使用金色边框
-                                : "gray.400"
-                            }
-                            boxShadow={
-                              selectedTile &&
-                              selectedTile.x === x &&
-                              selectedTile.y === y
-                                ? isHalfMode
-                                  ? "inset 0 0 0 3px #4cd1e0" // 分半模式亮蓝色内阴影
-                                  : "inset 0 0 0 3px gold" // 正常模式金色内阴影
-                                : "none"
-                            }
-                            display="flex" // 移除void检查，所有tile都正常显示
-                            alignItems="center"
-                            justifyContent="center"
-                            fontSize="lg"
-                            fontWeight="bold"
-                            cursor={
-                              // 只检查真正不可操作的地形
-                              tile.type === "m" ||
-                              (tile.type === "c" && !tile.hasVision)
-                                ? "not-allowed"
-                                : "pointer"
-                            }
-                            position="relative"
-                            _hover={
-                              // 只对可操作的tile添加悬停效果
-                              tile.type === "m" ||
-                              (tile.type === "c" && !tile.hasVision)
-                                ? {} // 不可操作的地形不响应悬停
-                                : {
-                                    bgColor: `${getTileColor(tile).split(".")[0]}.400`,
-                                    transition: "background-color 0.1s",
-                                  }
-                            }
-                            onClick={
-                              // 只对可操作的tile添加点击事件
-                              tile.type === "m" ||
-                              (tile.type === "c" && !tile.hasVision)
-                                ? undefined // 不可操作的地形不响应点击
-                                : () => handleTileClick(x, y)
-                            }
-                            opacity={1} // 所有tile都是不透明的
-                          >
-                            {getTileText(tile)}
-                          </Box>
-                        );
-                      })}
-                    </Box>
-                  );
-                })()}
-
-                {/* SVG箭头覆盖层 */}
-                {moveTracks.length > 0 &&
-                  (() => {
-                    // 计算SVG覆盖层的大小，与地图容器保持一致
-                    const mapWidth =
-                      gameMap.length > 0
-                        ? Math.max(...gameMap.map((t) => t.x)) + 1
-                        : 10;
-                    const mapHeight =
-                      gameMap.length > 0
-                        ? Math.max(...gameMap.map((t) => t.y)) + 1
-                        : 10;
-                    const baseTileSize = 60; // 固定tile大小
-                    const containerWidth = mapWidth * baseTileSize;
-                    const containerHeight = mapHeight * baseTileSize;
+                    const borderWidth = {
+                      top: isAtMapEdge.top ? "2px" : "1px",
+                      left: isAtMapEdge.left ? "2px" : "1px",
+                      right: isAtMapEdge.right ? "2px" : "1px",
+                      bottom: isAtMapEdge.bottom ? "2px" : "1px",
+                    };
 
                     return (
                       <Box
-                        position="absolute"
-                        top="0"
-                        left="0"
-                        width={`${containerWidth}px`}
-                        height={`${containerHeight}px`}
-                        pointerEvents="none"
-                        zIndex="10"
+                        key={i}
+                        bg={getTileColor(tile)}
+                        borderTop={`${borderWidth.top} solid`}
+                        borderLeft={`${borderWidth.left} solid`}
+                        borderRight={`${borderWidth.right} solid`}
+                        borderBottom={`${borderWidth.bottom} solid`}
+                        borderColor={
+                          selectedTile &&
+                          selectedTile.x === x &&
+                          selectedTile.y === y
+                            ? "gold"
+                            : "gray.400"
+                        }
+                        boxShadow={
+                          selectedTile &&
+                          selectedTile.x === x &&
+                          selectedTile.y === y
+                            ? "inset 0 0 0 2px gold" // 内阴影高亮效果
+                            : "none"
+                        }
+                        display={tile.type === "v" ? "none" : "flex"} // 占位符完全隐藏
+                        alignItems="center"
+                        justifyContent="center"
+                        fontSize="lg"
+                        fontWeight="bold"
+                        cursor={
+                          tile.type === "m" || tile.type === "v"
+                            ? "not-allowed"
+                            : "pointer"
+                        }
+                        position="relative"
+                        _hover={
+                          tile.type === "m" || tile.type === "v"
+                            ? {} // 山和占位符不响应悬停
+                            : {
+                                bgColor: `${getTileColor(tile).split(".")[0]}.400`,
+                                transition: "background-color 0.1s",
+                              }
+                        }
+                        onClick={
+                          tile.type === "m" || tile.type === "v"
+                            ? undefined // 山和占位符不响应点击
+                            : () => handleTileClick(x, y)
+                        }
+                        opacity={tile.type === "m" ? 1 : 1} // 移除山的透明度差异
                       >
-                        <svg
-                          width={containerWidth}
-                          height={containerHeight}
-                          style={{ position: "absolute", top: 0, left: 0 }}
-                        >
-                          {/* 定义现代化箭头标记 */}
-                          <defs>
-                            <marker
-                              id="arrowhead"
-                              markerWidth="8"
-                              markerHeight="8"
-                              refX="7"
-                              refY="4"
-                              orient="auto"
-                              markerUnits="strokeWidth"
-                            >
-                              <path
-                                d="M0,0 L0,8 L8,4 z"
-                                fill="currentColor"
-                                stroke="none"
-                              />
-                            </marker>
-                          </defs>
-                          {renderMoveArrows()}
-                        </svg>
+                        {getTileText(tile)}
                       </Box>
                     );
-                  })()}
+                  })}
+                </Box>
+
+                {/* SVG箭头覆盖层 */}
+                {moveTracks.length > 0 && (
+                  <Box
+                    position="absolute"
+                    top="0"
+                    left="0"
+                    width="600px"
+                    height="600px"
+                    pointerEvents="none"
+                    zIndex="10"
+                  >
+                    <svg
+                      width="600"
+                      height="600"
+                      style={{ position: "absolute", top: 0, left: 0 }}
+                    >
+                      {/* 定义现代化箭头标记 */}
+                      <defs>
+                        <marker
+                          id="arrowhead"
+                          markerWidth="8"
+                          markerHeight="8"
+                          refX="7"
+                          refY="4"
+                          orient="auto"
+                          markerUnits="strokeWidth"
+                        >
+                          <path
+                            d="M0,0 L0,8 L8,4 z"
+                            fill="currentColor"
+                            stroke="none"
+                          />
+                        </marker>
+                      </defs>
+                      {renderMoveArrows()}
+                    </svg>
+                  </Box>
+                )}
               </Box>
             ) : (
               <VStack py={10}>
@@ -2601,9 +2384,6 @@ const GamePage: React.FC = () => {
             </VStack>
           </Box>
         )}
-
-        {/* 游戏内聊天组件 */}
-        <MultiChat ref={multiChatRef} roomId={roomId} gameState={gameState} />
       </Box>
     </Box>
   );

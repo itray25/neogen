@@ -1,5 +1,5 @@
 import React from "react";
-import { Routes, Route, Link, useLocation } from "react-router-dom";
+import { Routes, Route, Link, useLocation, useParams } from "react-router-dom";
 import { Box, HStack, Text, Button, Badge } from "@chakra-ui/react";
 import { Toaster } from "@/components/ui/toaster";
 import { Home } from "./containers/Home";
@@ -9,7 +9,7 @@ import GamePage from "./containers/GamePage";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { AuthGuard } from "./components/AuthGuard";
 import { useAuthenticatedWebSocket } from "./hooks/useAuthenticatedWebSocket";
-import GlobalChat from "./components/GlobalChat";
+import GlobalChatWrapper from "./components/GlobalChatWrapper";
 import "./App.css";
 
 const AppContent = () => {
@@ -33,7 +33,7 @@ const AppContent = () => {
               NextGen 游戏
             </Text>
             <Badge size="sm" colorPalette={"purple"} variant="solid">
-              Alpha v0.2.1
+              Alpha v0.3.1
             </Badge>
           </Box>
           <HStack gap={4}>
@@ -126,8 +126,8 @@ const AppContent = () => {
       {/* 全局提示框 */}
       <Toaster />
 
-      {/* 全局聊天组件 */}
-      <GlobalChat />
+      {/* 智能聊天组件 */}
+      <GlobalChatWrapper />
     </Box>
   );
 };

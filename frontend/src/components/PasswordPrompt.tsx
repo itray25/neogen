@@ -33,7 +33,7 @@ export const PasswordPrompt: React.FC<PasswordPromptProps> = ({
       <Dialog.Positioner>
         <Dialog.Content>
           <Dialog.Header>
-            <Dialog.Title>房间 "{roomName}" 需要密码</Dialog.Title>
+            <Dialog.Title>房间 &quot;{roomName}&quot; 需要密码</Dialog.Title>
           </Dialog.Header>
           <Dialog.Body>
             <Field.Root>
@@ -42,7 +42,7 @@ export const PasswordPrompt: React.FC<PasswordPromptProps> = ({
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyDown={handleKeyPress}
                 autoFocus
               />
             </Field.Root>

@@ -5,22 +5,33 @@ use actix::fut;
 use actix_web::{ web, HttpRequest, HttpResponse };
 use actix_web_actors::ws;
 use serde_json;
+use rand::{Rng, SeedableRng};
+use rand::rngs::StdRng;
 type Coordinate = (i32, i32);
 
 #[derive(Clone, Debug, PartialEq)]
 enum Tile {
     Wilderness,                           // w: 无主之地
-    Territory { count: u8, user_id: String }, // t: 玩家领地，兵力count，玩家user_id
+    Territory { count: usize, user_id: String }, // t: 玩家领地，兵力count，玩家user_id
     Mountain,                            // m: 山（暂未使用）
-    General { count: u8, user_id: String }, // g: 王城，兵力count，玩家user_id
+    General { count: usize, user_id: String }, // g: 王城，兵力count，玩家user_id
     Void,                               // v: 占位符，空白（暂未使用）
+    City { count: usize, user_id: Option<String>, city_type: CityType }, // c: 城市，兵力count，拥有者user_id（可为空），城市类型
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum CityType {
+    Settlement,  // 定居点
+    SmallCity,   // 小型城市  
+    LargeCity,   // 大型城市
 }
 
 impl Tile {
-    fn get_count(&self) -> u8 {
+    fn get_count(&self) -> usize {
         match self {
             Tile::Territory { count, .. } => *count,
             Tile::General { count, .. } => *count,
+            Tile::City { count, .. } => *count,
             _ => 0,
         }
     }
@@ -29,14 +40,16 @@ impl Tile {
         match self {
             Tile::Territory { user_id, .. } => Some(user_id),
             Tile::General { user_id, .. } => Some(user_id),
+            Tile::City { user_id: Some(user_id), .. } => Some(user_id),
             _ => None,
         }
     }
     
-    fn set_count(&mut self, new_count: u8) {
+    fn set_count(&mut self, new_count: usize) {
         match self {
             Tile::Territory { count, .. } => *count = new_count,
             Tile::General { count, .. } => *count = new_count,
+            Tile::City { count, .. } => *count = new_count,
             _ => {} // 其他类型不支持设置兵力
         }
     }
@@ -51,14 +64,348 @@ struct GameMap {
 
 impl GameMap {
     fn new(width: usize, height: usize) -> Self {
-        // 创建空的地图，王城将在后续根据实际队伍动态设置
+        // 这个方法现在已被new_random替代，仅保留用于测试
+        // 创建基础地图，所有位置初始为荒野
         let tiles = vec![vec![Tile::Wilderness; width]; height];
+        Self { tiles, width, height }
+    }
+
+    // 生成随机地图，根据玩家数量调整地图大小和内容
+    fn new_random(player_count: usize) -> Self {
+        // 使用当前时间戳作为seed，确保每次游戏都不同
+        let seed = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        
+        Self::new_random_with_seed(player_count, seed)
+    }
+    
+    // 使用指定seed生成随机地图（用于测试和复现）
+    fn new_random_with_seed(player_count: usize, seed: u64) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed);
+        println!("使用seed {} 生成{}人地图", seed, player_count);
+        
+        // 根据玩家数量确定地图大小 - 增加更多变化
+        let base_size = match player_count {
+            1 => 20,
+            2 => 25,
+            3..=4 => 30,
+            5..=6 => 35,
+            7..=8 => 40,
+            9..=12 => 45,
+            _ => 50,
+        };
+        
+        // 添加随机变化 ±5
+        let size_variation = rng.random_range(-5i32..=5i32);
+        let map_size = ((base_size as i32) + size_variation).max(20).min(60) as usize;
+        let (width, height) = (map_size, map_size);
+        
+        let mut attempts = 0;
+        let max_attempts = 100;
+        
+        loop {
+            attempts += 1;
+            if attempts > max_attempts {
+                println!("警告: 达到最大尝试次数，使用当前生成的地图");
+                break;
+            }
+            
+            // 创建基础地图
+            let mut tiles = vec![vec![Tile::Wilderness; width]; height];
+            
+            // 首先生成王城位置，确保曼哈顿距离>=15
+            let general_positions = Self::generate_valid_general_positions(&mut rng, width, height, player_count);
+            if general_positions.is_empty() {
+                println!("无法为{}个玩家在{}x{}地图上生成有效王城位置，尝试{}次", player_count, width, height, attempts);
+                continue;
+            }
+            
+            // 设置王城
+            for (x, y) in &general_positions {
+                tiles[*y][*x] = Tile::General {
+                    count: 2,
+                    user_id: "unassigned".to_string(),
+                };
+            }
+            
+            // 生成地形 - 完全随机分布
+            let total_tiles = width * height;
+            let mountain_density = rng.random_range(0.10..0.20); // 10%-20%的山
+            let city_density = rng.random_range(0.08..0.15); // 8%-15%的城市
+            
+            let mountain_count = (total_tiles as f32 * mountain_density) as usize;
+            let city_count = (total_tiles as f32 * city_density) as usize;
+            
+            // 随机生成山脉
+            for _ in 0..mountain_count {
+                let x = rng.random_range(0..width);
+                let y = rng.random_range(0..height);
+                
+                // 如果位置为荒野就放山，否则跳过
+                if matches!(tiles[y][x], Tile::Wilderness) {
+                    tiles[y][x] = Tile::Mountain;
+                }
+            }
+            
+            // 随机生成城市
+            for _ in 0..city_count {
+                let x = rng.random_range(0..width);
+                let y = rng.random_range(0..height);
+                
+                // 如果位置为荒野就放城市，否则跳过
+                if matches!(tiles[y][x], Tile::Wilderness) {
+                    let city_type = match rng.random_range(0..10) {
+                        0..=1 => CityType::LargeCity,    // 20% 大城市
+                        2..=4 => CityType::SmallCity,    // 30% 小城市
+                        _ => CityType::Settlement,       // 50% 定居点
+                    };
+                    
+                    let initial_count = match city_type {
+                        CityType::Settlement => rng.random_range(15..=25),
+                        CityType::SmallCity => rng.random_range(35..=55),
+                        CityType::LargeCity => rng.random_range(75..=105),
+                    };
+                    
+                    tiles[y][x] = Tile::City {
+                        count: initial_count,
+                        user_id: None,
+                        city_type,
+                    };
+                }
+            }
+            
+            // 验证王城连通性
+            let temp_map = Self { tiles: tiles.clone(), width, height };
+            if temp_map.validate_general_connectivity() {
+                println!("成功生成{}x{}地图，{}个王城，{}座山，{}座城市", 
+                        width, height, general_positions.len(), mountain_count, city_count);
+                return Self { tiles, width, height };
+            }
+            
+            println!("地图连通性验证失败，重新生成... (尝试 {}/{})", attempts, max_attempts);
+        }
+        
+        // 如果达到最大尝试次数，生成一个简化的保证连通的地图
+        Self::new_fallback_map(width, height, player_count, seed)
+    }
+    
+    // 生成有效的王城位置，确保曼哈顿距离>=15
+    fn generate_valid_general_positions(rng: &mut StdRng, width: usize, height: usize, player_count: usize) -> Vec<(usize, usize)> {
+        let mut positions = Vec::new();
+        let min_distance = 15;
+        let max_attempts = 1000;
+        
+        // 确保地图足够大以容纳所需的王城
+        let diagonal = (width * width + height * height) as f64;
+        let max_possible_distance = diagonal.sqrt() as usize;
+        
+        if max_possible_distance < min_distance * 2 {
+            println!("警告: 地图尺寸{}x{}可能不足以容纳{}个王城（最小距离{}）", width, height, player_count, min_distance);
+        }
+        
+        for _ in 0..player_count {
+            let mut attempts = 0;
+            let mut placed = false;
+            
+            while attempts < max_attempts && !placed {
+                attempts += 1;
+                
+                // 在边界内随机选择位置，留一些边距
+                let margin = 3;
+                let x = rng.random_range(margin..width.saturating_sub(margin));
+                let y = rng.random_range(margin..height.saturating_sub(margin));
+                
+                // 检查与现有王城的距离
+                let mut valid = true;
+                for &(ex_x, ex_y) in &positions {
+                    let manhattan_distance = ((x as i32 - ex_x as i32).abs() + (y as i32 - ex_y as i32).abs()) as usize;
+                    if manhattan_distance < min_distance {
+                        valid = false;
+                        break;
+                    }
+                }
+                
+                if valid {
+                    positions.push((x, y));
+                    placed = true;
+                    println!("王城{}放置在({}, {})，尝试{}次", positions.len(), x, y, attempts);
+                }
+            }
+            
+            if !placed {
+                println!("无法为第{}个王城找到有效位置", positions.len() + 1);
+                return Vec::new(); // 返回空向量表示失败
+            }
+        }
+        
+        positions
+    }
+    
+    // 生成保底地图（确保连通性）
+    fn new_fallback_map(width: usize, height: usize, player_count: usize, seed: u64) -> Self {
+        let mut rng = StdRng::seed_from_u64(seed + 1000); // 使用不同的seed避免重复
+        println!("生成保底地图{}x{}，{}个玩家", width, height, player_count);
+        
+        let mut tiles = vec![vec![Tile::Wilderness; width]; height];
+        
+        // 在地图四个象限分布王城，确保距离足够
+        let mut positions = Vec::new();
+        let quadrant_width = width / 2;
+        let quadrant_height = height / 2;
+        
+        for i in 0..player_count {
+            let (base_x, base_y) = match i % 4 {
+                0 => (quadrant_width / 2, quadrant_height / 2), // 左上
+                1 => (width - quadrant_width / 2, quadrant_height / 2), // 右上
+                2 => (quadrant_width / 2, height - quadrant_height / 2), // 左下
+                _ => (width - quadrant_width / 2, height - quadrant_height / 2), // 右下
+            };
+            
+            // 在象限内添加小范围随机偏移
+            let offset_range = quadrant_width.min(quadrant_height) / 4;
+            let x_offset = rng.random_range(-(offset_range as i32)/2..=(offset_range as i32)/2);
+            let y_offset = rng.random_range(-(offset_range as i32)/2..=(offset_range as i32)/2);
+            
+            let x = (base_x as i32 + x_offset).max(3).min(width as i32 - 4) as usize;
+            let y = (base_y as i32 + y_offset).max(3).min(height as i32 - 4) as usize;
+            
+            positions.push((x, y));
+            tiles[y][x] = Tile::General {
+                count: 2,
+                user_id: "unassigned".to_string(),
+            };
+        }
+        
+        // 添加少量随机地形，确保不阻断连通性
+        let mountain_count = (width * height / 25).max(5); // 约4%的山
+        let city_count = (width * height / 20).max(8); // 约5%的城市
+        
+        for _ in 0..mountain_count {
+            let x = rng.random_range(1..width-1);
+            let y = rng.random_range(1..height-1);
+            
+            if matches!(tiles[y][x], Tile::Wilderness) {
+                tiles[y][x] = Tile::Mountain;
+            }
+        }
+        
+        for _ in 0..city_count {
+            let x = rng.random_range(1..width-1);
+            let y = rng.random_range(1..height-1);
+            
+            if matches!(tiles[y][x], Tile::Wilderness) {
+                let city_type = match rng.random_range(0..3) {
+                    0 => CityType::LargeCity,
+                    1 => CityType::SmallCity,
+                    _ => CityType::Settlement,
+                };
+                
+                let initial_count = match city_type {
+                    CityType::Settlement => rng.random_range(15..=25),
+                    CityType::SmallCity => rng.random_range(35..=55),
+                    CityType::LargeCity => rng.random_range(75..=105),
+                };
+                
+                tiles[y][x] = Tile::City {
+                    count: initial_count,
+                    user_id: None,
+                    city_type,
+                };
+            }
+        }
         
         Self { tiles, width, height }
     }
     
+    // 验证王城连通性
+    fn validate_general_connectivity(&self) -> bool {
+        let mut general_positions = Vec::new();
+        
+        // 找到所有王城位置
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if matches!(self.tiles[y][x], Tile::General { .. }) {
+                    general_positions.push((x, y));
+                }
+            }
+        }
+        
+        if general_positions.len() < 2 {
+            return true; // 少于2个王城无需验证连通性
+        }
+        
+        // 使用BFS验证所有王城是否连通
+        let mut visited = vec![vec![false; self.width]; self.height];
+        let mut queue = std::collections::VecDeque::new();
+        
+        // 从第一个王城开始BFS
+        let start = general_positions[0];
+        queue.push_back(start);
+        visited[start.1][start.0] = true;
+        let mut reachable_generals = 1;
+        
+        while let Some((x, y)) = queue.pop_front() {
+            // 检查四个方向
+            for (dx, dy) in [(0, 1), (1, 0), (0, -1), (-1, 0)] {
+                let nx = x as i32 + dx;
+                let ny = y as i32 + dy;
+                
+                if nx >= 0 && nx < self.width as i32 && ny >= 0 && ny < self.height as i32 {
+                    let nx = nx as usize;
+                    let ny = ny as usize;
+                    
+                    if !visited[ny][nx] {
+                        // 可以通过的地形：荒野、城市、王城
+                        match &self.tiles[ny][nx] {
+                            Tile::Wilderness | Tile::Territory { .. } | Tile::City { .. } | Tile::General { .. } => {
+                                visited[ny][nx] = true;
+                                queue.push_back((nx, ny));
+                                
+                                // 如果到达了另一个王城
+                                if matches!(self.tiles[ny][nx], Tile::General { .. }) {
+                                    reachable_generals += 1;
+                                }
+                            },
+                            _ => {} // 山脉和虚空不可通过
+                        }
+                    }
+                }
+            }
+        }
+        
+        reachable_generals == general_positions.len()
+    }
+    
+    // 为队伍分配王城
+    fn assign_generals(&mut self, team_ids: &[String]) {
+        let mut general_positions = Vec::new();
+        
+        // 找到所有未分配的王城
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if let Tile::General { user_id, .. } = &self.tiles[y][x] {
+                    if user_id == "unassigned" {
+                        general_positions.push((x, y));
+                    }
+                }
+            }
+        }
+        
+        // 为每个队伍分配王城
+        for (i, team_id) in team_ids.iter().enumerate() {
+            if i < general_positions.len() {
+                let (x, y) = general_positions[i];
+                if let Tile::General { user_id, .. } = &mut self.tiles[y][x] {
+                    *user_id = team_id.clone();
+                }
+            }
+        }
+    }
+    
     // 在指定位置设置王城
-    fn set_general(&mut self, x: usize, y: usize, team_id: String, initial_count: u8) -> Result<(), String> {
+    fn set_general(&mut self, x: usize, y: usize, team_id: String, initial_count: usize) -> Result<(), String> {
         if x >= self.width || y >= self.height {
             return Err("位置超出地图边界".to_string());
         }
@@ -87,9 +434,10 @@ impl GameMap {
     }
     
     // 获取玩家可见区域（拥有的领地及其周围9格）
-    fn get_visible_tiles(&self, user_id: &str) -> Vec<(usize, usize, Tile)> {
+    fn get_visible_tiles(&self, user_id: &str) -> Vec<(usize, usize, Tile, bool)> {
         let mut visible = Vec::new();
         let mut checked = std::collections::HashSet::new();
+        let mut has_vision = std::collections::HashSet::new();
         
         // 找到所有玩家拥有的tile
         for y in 0..self.height {
@@ -97,7 +445,7 @@ impl GameMap {
                 let tile = &self.tiles[y][x];
                 if let Some(owner) = tile.get_user_id() {
                     if owner == user_id {
-                        // 添加该tile及其周围9格
+                        // 标记该tile及其周围9格为有视野
                         for dy in -1..=1 {
                             for dx in -1..=1 {
                                 let nx = x as i32 + dx;
@@ -105,11 +453,12 @@ impl GameMap {
                                 if nx >= 0 && ny >= 0 && nx < self.width as i32 && ny < self.height as i32 {
                                     let nx = nx as usize;
                                     let ny = ny as usize;
+                                    has_vision.insert((nx, ny));
                                     if !checked.contains(&(nx, ny)) {
                                         checked.insert((nx, ny));
                                         if let Some(visible_tile) = self.get_tile(nx, ny) {
                                             if !matches!(visible_tile, Tile::Void) {
-                                                visible.push((nx, ny, visible_tile.clone()));
+                                                visible.push((nx, ny, visible_tile.clone(), true));
                                             }
                                         }
                                     }
@@ -121,12 +470,34 @@ impl GameMap {
             }
         }
         
+        // 添加所有山和城市的位置（对所有人可见），但如果没有视野就显示为山+问号
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let tile = &self.tiles[y][x];
+                if (matches!(tile, Tile::Mountain) || matches!(tile, Tile::City { .. })) && !checked.contains(&(x, y)) {
+                    let has_local_vision = has_vision.contains(&(x, y));
+                    visible.push((x, y, tile.clone(), has_local_vision));
+                    checked.insert((x, y));
+                }
+            }
+        }
+        
+        // 添加所有void tiles，因为它们对所有玩家都可见
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let tile = &self.tiles[y][x];
+                if matches!(tile, Tile::Void) && !checked.contains(&(x, y)) {
+                    visible.push((x, y, tile.clone(), true));
+                }
+            }
+        }
+        
         visible
     }
     
-    // 执行移动命令，返回是否有玩家获胜
-    fn execute_move(&mut self, from_x: usize, from_y: usize, to_x: usize, to_y: usize, team_id: &str) -> Result<Option<String>, String> {
-        println!("执行移动: 从({},{}) 到({},{}) 队伍: {}", from_x, from_y, to_x, to_y, team_id);
+    // 执行移动命令，返回游戏结果：Ok((获胜队伍, 被击败队伍)) 或 None表示游戏继续
+    fn execute_move(&mut self, from_x: usize, from_y: usize, to_x: usize, to_y: usize, team_id: &str, is_half_move: bool) -> Result<(Option<String>, Option<String>), String> {
+        println!("执行移动: 从({},{}) 到({},{}) 队伍: {} 半移动: {}", from_x, from_y, to_x, to_y, team_id, is_half_move);
         
         // 验证坐标有效性
         if from_x >= self.width || from_y >= self.height || to_x >= self.width || to_y >= self.height {
@@ -163,42 +534,107 @@ impl GameMap {
                     return Err(format!("兵力不足，无法移动 (当前兵力: {})", n));
                 }
                 
-                // 将起始位置兵力设为1
+                // 计算移动的兵力数量
+                let move_count = if is_half_move {
+                    // 半移动模式：移动总兵力的一半
+                    // 例如：10 -> 移动5，留下5（10/2=5）
+                    // 例如：11 -> 移动5，留下6（11/2=5，整数除法）
+                    n / 2
+                } else {
+                    // 正常移动模式：移动 n-1 的兵力
+                    n - 1
+                };
+                
+                // 确保至少移动1个兵力，至少留下1个兵力
+                let move_count = std::cmp::max(1, std::cmp::min(move_count, n - 1));
+                
+                // 计算源位置剩余兵力
+                let remaining_count = n - move_count;
+                
+                println!("移动兵力: {} (半移动: {}), 剩余兵力: {}", move_count, is_half_move, remaining_count);
+                
+                // 设置起始位置剩余兵力
                 if let Some(source_tile) = self.get_tile_mut(from_x, from_y) {
-                    source_tile.set_count(1);
+                    source_tile.set_count(remaining_count);
                 }
                 
                 // 处理目标位置
                 if let Some(target_tile) = self.get_tile_mut(to_x, to_y) {
                     match target_tile {
                         Tile::Wilderness => {
-                            // 1. 若为w，变为己方t，兵力为n-1
-                            *target_tile = Tile::Territory { count: n - 1, user_id: team_id.to_string() };
+                            // 1. 若为w，变为己方t，兵力为move_count
+                            *target_tile = Tile::Territory { count: move_count, user_id: team_id.to_string() };
                         }
                         Tile::Territory { count: m, user_id } => {
                             if user_id == team_id {
-                                // 2. 若为我方t（兵力为m），兵力增为m+n-1
-                                *m = *m + n - 1;
+                                // 2. 若为我方t（兵力为m），兵力增为m+move_count
+                                *m = *m + move_count;
                             } else {
-                                // 3. 若为敌方t（兵力m），如果n-1>m，变为己方t（兵力n-1-m）；反之小于等于，变为敌方t（兵力m-n+1）
-                                if n - 1 > *m {
-                                    *target_tile = Tile::Territory { count: (n - 1) - *m, user_id: team_id.to_string() };
+                                // 3. 若为敌方t（兵力m），如果move_count>m，变为己方t（兵力move_count-m）；反之小于等于，变为敌方t（兵力m-move_count）
+                                if move_count > *m {
+                                    *target_tile = Tile::Territory { count: move_count - *m, user_id: team_id.to_string() };
                                 } else {
-                                    *m = *m - (n - 1);
+                                    *m = *m - move_count;
                                 }
                             }
                         }
                         Tile::General { count: m, user_id } => {
                             if user_id == team_id {
                                 // 己方王城，兵力增加
-                                *m = *m + n - 1;
+                                *m = *m + move_count;
                             } else {
-                                // 4. 若为敌方g（兵力m），如果n-1>m，判定对方失败，游戏结束；反之小于等于，变为敌方g（兵力m-n+1）
-                                if n - 1 > *m {
-                                    // 对方失败，游戏结束，返回获胜队伍
-                                    return Ok(Some(team_id.to_string()));
+                                // 若为敌方g（兵力m），如果move_count>m，击败该玩家，继续检查是否游戏结束；反之小于等于，变为敌方g（兵力m-move_count）
+                                if move_count > *m {
+                                    let defeated_team = user_id.clone();
+                                    // 将敌方王城变为己方塔，图标仍为g
+                                    *target_tile = Tile::General { count: move_count - *m, user_id: team_id.to_string() };
+                                    
+                                    // 处理被击败玩家的所有兵力：兵力乘以1/2后变为己方兵力
+                                    self.transfer_defeated_player_forces(&defeated_team, team_id);
+                                    
+                                    // 检查是否所有其他玩家都被击败（游戏结束条件）
+                                    let remaining_teams = self.get_active_teams();
+                                    if remaining_teams.len() <= 1 {
+                                        // 游戏结束，当前队伍获胜
+                                        return Ok((Some(team_id.to_string()), Some(defeated_team)));
+                                    } else {
+                                        // 游戏继续，但有玩家被击败
+                                        return Ok((None, Some(defeated_team)));
+                                    }
                                 } else {
-                                    *m = *m - (n - 1);
+                                    *m = *m - move_count;
+                                }
+                            }
+                        }
+                        Tile::City { count: m, user_id, city_type } => {
+                            match user_id {
+                                Some(owner) if owner == team_id => {
+                                    // 己方城市，兵力增加
+                                    *m = *m + move_count;
+                                }
+                                Some(_) => {
+                                    // 敌方城市，如果move_count>m，占领城市；反之小于等于，城市兵力减少
+                                    if move_count > *m {
+                                        *target_tile = Tile::City { 
+                                            count: move_count - *m, // 占领后剩余兵力 = 攻击兵力 - 防守兵力
+                                            user_id: Some(team_id.to_string()),
+                                            city_type: city_type.clone()
+                                        };
+                                    } else {
+                                        *m = *m - move_count;
+                                    }
+                                }
+                                None => {
+                                    // 无主城市，如果move_count>m，占领城市；反之小于等于，城市兵力减少
+                                    if move_count > *m {
+                                        *target_tile = Tile::City { 
+                                            count: move_count - *m, // 占领后剩余兵力 = 攻击兵力 - 防守兵力
+                                            user_id: Some(team_id.to_string()),
+                                            city_type: city_type.clone()
+                                        };
+                                    } else {
+                                        *m = *m - move_count;
+                                    }
                                 }
                             }
                         }
@@ -213,7 +649,7 @@ impl GameMap {
                     return Err("目标位置无效".to_string());
                 }
                 
-                Ok(None) // 游戏继续
+                Ok((None, None)) // 游戏继续，无玩家被击败
             }
             None => Err("源位置无效".to_string()),
         }
@@ -230,6 +666,106 @@ impl GameMap {
         }
     }
     
+    // 转移被击败玩家的兵力给获胜者
+    fn transfer_defeated_player_forces(&mut self, defeated_team: &str, winner_team: &str) {
+        for row in &mut self.tiles {
+            for tile in row {
+                match tile {
+                    Tile::Territory { count, user_id } if user_id == defeated_team => {
+                        let new_count = *count / 2; // 兵力乘以1/2
+                        if new_count > 0 {
+                            *count = new_count;
+                            *user_id = winner_team.to_string();
+                        } else {
+                            // 如果兵力为0，变回荒野
+                            *tile = Tile::Wilderness;
+                        }
+                    }
+                    Tile::City { count, user_id: Some(owner), city_type } if owner == defeated_team => {
+                        let new_count = *count / 2; // 兵力乘以1/2
+                        if new_count > 0 {
+                            *count = new_count;
+                            *tile = Tile::City { 
+                                count: new_count, 
+                                user_id: Some(winner_team.to_string()),
+                                city_type: city_type.clone()
+                            };
+                        } else {
+                            // 如果兵力为0，变为无主城市
+                            *tile = Tile::City { 
+                                count: 0, 
+                                user_id: None,
+                                city_type: city_type.clone()
+                            };
+                        }
+                    }
+                    // 王城已经在execute_move中处理过了
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    // 获取当前地图上活跃的队伍
+    fn get_active_teams(&self) -> Vec<String> {
+        let mut teams = std::collections::HashSet::new();
+        for row in &self.tiles {
+            for tile in row {
+                if let Some(user_id) = tile.get_user_id() {
+                    teams.insert(user_id.clone());
+                }
+            }
+        }
+        teams.into_iter().collect()
+    }
+    
+    // 增加所有城市的兵力（根据城市类型不同增长速度不同）
+    fn increase_city_troops(&mut self, ticks_passed: u64) {
+        for row in &mut self.tiles {
+            for tile in row {
+                if let Tile::City { count, user_id: Some(_), city_type } = tile {
+                    // 只有被占领的城市才会增长兵力
+                    match city_type {
+                        CityType::Settlement => {
+                            // 定居点每2秒增加1（每4个tick增加1，因为tick是0.5秒）
+                            if ticks_passed % 4 == 0 && ticks_passed > 0 {
+                                *count += 1;
+                                //println!("定居点兵力增长: {} -> {}", *count - 1, *count);
+                            }
+                        }
+                        CityType::SmallCity => {
+                            // 小型城市每1秒增加1（每2个tick增加1）
+                            if ticks_passed % 2 == 0 && ticks_passed > 0 {
+                                *count += 1;
+                                //println!("小型城市兵力增长: {} -> {}", *count - 1, *count);
+                            }
+                        }
+                        CityType::LargeCity => {
+                            // 大型城市每1秒增加2（每2个tick增加2）
+                            if ticks_passed % 2 == 0 && ticks_passed > 0 {
+                                *count += 2;
+                                //println!("大型城市兵力增长: {} -> {}", *count - 2, *count);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 获取全图所有tiles（观众模式用）
+    fn get_all_tiles(&self) -> Vec<(usize, usize, Tile, bool)> {
+        let mut all_tiles = Vec::new();
+        for y in 0..self.height {
+            for x in 0..self.width {
+                // 所有类型的tiles都包含，包括void（前端会特殊处理void）
+                // 观众拥有完全视野
+                all_tiles.push((x, y, self.tiles[y][x].clone(), true));
+            }
+        }
+        all_tiles
+    }
+    
     // 增加所有领地和王城的兵力
     fn increase_all_troops(&mut self) {
         for row in &mut self.tiles {
@@ -243,6 +779,22 @@ impl GameMap {
             }
         }
     }
+    
+    // 计算所有玩家的总兵力
+    fn calculate_player_powers(&self) -> HashMap<String, u32> {
+        let mut player_powers: HashMap<String, u32> = HashMap::new();
+        
+        for row in &self.tiles {
+            for tile in row {
+                if let Some(user_id) = tile.get_user_id() {
+                    let count = tile.get_count() as u32;
+                    *player_powers.entry(user_id.clone()).or_insert(0) += count;
+                }
+            }
+        }
+        
+        player_powers
+    }
 }
 
 #[derive(Clone)]
@@ -255,14 +807,14 @@ enum Direction {
 
 #[derive(Clone, Debug)]
 struct GroupInfo {
-    id: u8,           // 组ID: 0-7为玩家组，8为观众组
+    id: usize,           // 组ID: 0-7为玩家组，8为观众组
     name: String,     // 组名称
     color: String,    // 组颜色
     players: Vec<String>, // 组内玩家ID列表
 }
 
 impl GroupInfo {
-    fn new(id: u8) -> Self {
+    fn new(id: usize) -> Self {
         let (name, color) = match id {
             0 => ("红队".to_string(), "#FF4444".to_string()),
             1 => ("蓝队".to_string(), "#4444FF".to_string()),
@@ -301,7 +853,7 @@ struct RoomInfo {
     password: Option<String>, // 新增：房间密码
     is_public: bool,         // 新增：是否为公开房间
     groups: Vec<GroupInfo>,  // 新增：分组信息
-    player_groups: HashMap<String, u8>, // 新增：玩家ID -> 组ID映射
+    player_groups: HashMap<String, usize>, // 新增：玩家ID -> 组ID映射
     // 游戏回合制相关字段
     game_turn: u32, // 当前回合数
     turn_half: bool, // true为上半回合(0-0.5s), false为下半回合(0.5-1s)
@@ -330,7 +882,7 @@ struct ReturnedRoomInfo {
 
 #[derive(Clone, Debug)]
 struct ReturnedGroupInfo {
-    id: u8,
+    id: usize,
     players: Vec<String>, // 只返回用户名列表，颜色和名称前端处理
 }
 
@@ -350,6 +902,8 @@ enum UserMessage {
         from_y: usize,
         to_x: usize,
         to_y: usize,
+        move_id: usize,
+        is_half_move: bool, // 是否为分半移动
     },
     Chat {
         room_id: String,
@@ -375,6 +929,9 @@ enum UserMessage {
         room_id: String,
         player_id: String,
     },
+    ShouldStart {
+        room_id: String,
+    },
     SetAdmin {
         room_id: String,
         host_id: String,
@@ -392,7 +949,7 @@ enum UserMessage {
     ChangeGroup {
         room_id: String,
         player_id: String,
-        target_group_id: u8,
+        target_group_id: usize,
     },
     SetUserInfo {
         user_id: String,
@@ -401,6 +958,9 @@ enum UserMessage {
     RoomInfoUpdate(ReturnedRoomInfo),
     RedirectToHome {
         reason: String,
+    },
+    RedirectToGame {
+        room_id: String,
     },
     StartGame {
         room_id: String,
@@ -421,12 +981,21 @@ enum UserMessage {
     },
     MapUpdate {
         room_id: String,
-        visible_tiles: Vec<(usize, usize, String, u8, Option<String>)>, // (x, y, tile_type, count, user_id)
+        visible_tiles: Vec<(usize, usize, String, usize, Option<String>, bool)>, // (x, y, tile_type, count, user_id, has_vision)
+        successful_move_sends: Vec<usize>, // 成功发送的move_id列表
+        player_powers: Vec<(String, usize, u32, String)>, // (username, group_id, total_power, status) - 所有玩家的总兵力和状态
     },
     GameWin {
         room_id: String,
         winner: String,
     },
+    PlayerEliminated {
+        room_id: String,
+        eliminated_player: String,
+        eliminated_by: String,
+    },
+    MoveOk{
+},
     Ok,
     Err(String),
 }
@@ -455,6 +1024,10 @@ struct GetRoomInfo {
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct CleanupInactiveRooms;
+
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct CleanupDisconnectedPlayers;
 
 #[derive(Message)]
 #[rtype(result = "Vec<(String, String, String, String, usize, usize, String, usize, usize, bool, bool)>")]
@@ -502,6 +1075,7 @@ pub struct GameServer {
     rooms: HashMap<String, RoomInfo>, // room_id -> room_info
     user_name_table: HashMap<String, String>, // userid -> username
     kicked_players: HashMap<String, HashMap<String, u64>>, // room_id -> (userid -> kick_time)
+    disconnected_players: HashMap<String, u64>, // userid -> disconnect_time - 新增：断线玩家时间跟踪
 }
 
 impl Default for GameServer {
@@ -544,6 +1118,7 @@ impl Default for GameServer {
             rooms,
             user_name_table: HashMap::new(),
             kicked_players: HashMap::new(),
+            disconnected_players: HashMap::new(), // 新增：初始化断线玩家跟踪
         }
     }
 }
@@ -585,6 +1160,7 @@ impl GameServer {
             rooms,
             user_name_table: HashMap::new(),
             kicked_players: HashMap::new(),
+            disconnected_players: HashMap::new(), // 新增：初始化断线玩家跟踪
         }
     }
 
@@ -636,19 +1212,172 @@ impl GameServer {
             });
         }
     }
+    
+    // 处理玩家被击败
+    fn handle_player_elimination(&mut self, room_id: &str, defeated_team: &str, winner_team: &str) {
+        if let Some(room) = self.rooms.get_mut(room_id) {
+            // 找到被击败的玩家并将其转为观众组（组8）
+            let mut defeated_players = Vec::new();
+            for (player_id, team) in &room.player_teams {
+                if team == defeated_team {
+                    defeated_players.push(player_id.clone());
+                }
+            }
+            
+            // 将被击败的玩家移动到观众组
+            for player_id in defeated_players {
+                room.player_groups.insert(player_id.clone(), 8);
+                
+                // 向被击败的玩家发送系统消息
+                if let Some(recipient) = self.player_sessions.get(&player_id) {
+                    let _ = recipient.do_send(UserMessage::Chat {
+                        room_id: room_id.to_string(),
+                        sender_id: "system".to_string(),
+                        username: "系统".to_string(),
+                        content: format!("您已被 {} 击败，现在转为观众身份，拥有全局视野", winner_team),
+                    });
+                }
+            }
+        }
+    }
+    
+    // 向房间内所有玩家发送地图更新
+    fn send_map_update_to_all_players(&mut self, room_id: &str, successful_move_sends: Vec<usize>) {
+        if let Some(room) = self.rooms.get(room_id) {
+            if let Some(ref game_map) = room.game_map {
+                for p_id in &room.players {
+                    if let Some(&group_id) = room.player_groups.get(p_id) {
+                        let player_powers = self.calculate_player_powers(room_id);
+                        
+                        let formatted_tiles: Vec<(usize, usize, String, usize, Option<String>, bool)>;
+                        
+                        if group_id == 8 {
+                            // 观众可以看到全图
+                            formatted_tiles = game_map.get_all_tiles()
+                                .into_iter().map(|(x, y, tile, has_vision)| {
+                                    let (tile_type, count, user_id) = match tile {
+                                        Tile::Wilderness => ("w".to_string(), 0, None),
+                                        Tile::Territory { count, user_id } => ("t".to_string(), count, Some(user_id)),
+                                        Tile::Mountain => ("m".to_string(), 0, None),
+                                        Tile::General { count, user_id } => ("g".to_string(), count, Some(user_id)),
+                                        Tile::Void => ("v".to_string(), 0, None),
+                                        Tile::City { count, user_id, city_type } => {
+                                            let type_str = match city_type {
+                                                CityType::Settlement => "c_settlement",
+                                                CityType::SmallCity => "c_smallcity",
+                                                CityType::LargeCity => "c_largecity",
+                                            };
+                                            (type_str.to_string(), count, user_id)
+                                        },
+                                    };
+                                    (x, y, tile_type, count, user_id, has_vision)
+                                }).collect();
+                        } else {
+                            // 其他玩家根据视野规则看到地图
+                            if let Some(team_id) = room.player_teams.get(p_id) {
+                                formatted_tiles = game_map.get_visible_tiles(team_id)
+                                    .into_iter().map(|(x, y, tile, has_vision)| {
+                                        let (tile_type, count, user_id) = if has_vision {
+                                            match tile {
+                                                Tile::Wilderness => ("w".to_string(), 0, None),
+                                                Tile::Territory { count, user_id } => ("t".to_string(), count, Some(user_id)),
+                                                Tile::Mountain => ("m".to_string(), 0, None),
+                                                Tile::General { count, user_id } => ("g".to_string(), count, Some(user_id)),
+                                                Tile::Void => ("v".to_string(), 0, None),
+                                                Tile::City { count, user_id, city_type } => {
+                                                    let city_type_str = match city_type {
+                                                        CityType::Settlement => "settlement",
+                                                        CityType::SmallCity => "smallcity",
+                                                        CityType::LargeCity => "largecity",
+                                                    };
+                                                    (format!("c_{}", city_type_str), count, user_id)
+                                                },
+                                            }
+                                        } else {
+                                            ("unknown".to_string(), 0, None)
+                                        };
+                                        (x, y, tile_type, count, user_id, has_vision)
+                                    }).collect();
+                            } else {
+                                continue;
+                            }
+                        }
+                        
+                        if let Some(recipient) = self.player_sessions.get(p_id) {
+                            let _ = recipient.do_send(UserMessage::MapUpdate {
+                                room_id: room_id.to_string(),
+                                visible_tiles: formatted_tiles,
+                                successful_move_sends: successful_move_sends.clone(),
+                                player_powers: player_powers.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    // 计算玩家兵力
+    fn calculate_player_powers(&self, room_id: &str) -> Vec<(String, usize, u32, String)> {
+        let mut player_powers = Vec::new();
+        
+        if let Some(room) = self.rooms.get(room_id) {
+            if let Some(ref game_map) = room.game_map {
+                let mut team_powers: HashMap<String, u32> = HashMap::new();
+                
+                // 计算每个队伍的总兵力
+                for row in &game_map.tiles {
+                    for tile in row {
+                        if let Some(user_id) = tile.get_user_id() {
+                            let power = tile.get_count() as u32;
+                            *team_powers.entry(user_id.clone()).or_insert(0) += power;
+                        }
+                    }
+                }
+                
+                // 为每个玩家生成兵力数据
+                for (player_id, team_id) in &room.player_teams {
+                    if let Some(username) = self.user_name_table.get(player_id) {
+                        let group_id = room.player_groups.get(player_id).copied().unwrap_or(0);
+                        let total_power = if group_id == 8 {
+                            // 被击败的玩家兵力为0
+                            0
+                        } else {
+                            team_powers.get(team_id).copied().unwrap_or(0)
+                        };
+                        
+                        // 确定玩家状态
+                        let status = if group_id == 8 {
+                            "observer".to_string()
+                        } else if self.disconnected_players.contains_key(player_id) {
+                            "disconnected".to_string()
+                        } else if total_power == 0 {
+                            "defeated".to_string()
+                        } else {
+                            "active".to_string()
+                        };
+                        
+                        player_powers.push((username.clone(), group_id, total_power, status));
+                    }
+                }
+            }
+        }
+        
+        player_powers
+    }
 
     // 为玩家分配到最小的组（优先分配到玩家组0-7，如果都满了则分配到观众组8）
     fn assign_player_to_smallest_group(&mut self, room_id: &str, player_id: &str) {
         if let Some(room) = self.rooms.get_mut(room_id) {
             // 找到人数最少的玩家组（0-7）
-            let mut smallest_group_id = 0u8;
+            let mut smallest_group_id = 0usize;
             let mut smallest_group_size = usize::MAX;
             
             for i in 0..8 { // 只考虑玩家组0-7
                 if let Some(group) = room.groups.get(i) {
                     if group.players.len() < smallest_group_size {
                         smallest_group_size = group.players.len();
-                        smallest_group_id = i as u8;
+                        smallest_group_id = i as usize;
                     }
                 }
             }
@@ -668,7 +1397,7 @@ impl GameServer {
     }
 
     // 切换玩家组别
-    fn change_player_group(&mut self, room_id: &str, player_id: &str, target_group_id: u8) -> Result<(), String> {
+    fn change_player_group(&mut self, room_id: &str, player_id: &str, target_group_id: usize) -> Result<(), String> {
         if target_group_id > 8 {
             return Err("无效的组ID".to_string());
         }
@@ -741,12 +1470,29 @@ impl GameServer {
             let required_to_start = if room_id == "global" {
                 0
             } else {
-                let force_start_n_dict = HashMap::from([
-                    (2, 2), (3, 3), (4, 3), (5, 4), (6, 4),
-                    (7, 5), (8, 5), (9, 6), (10, 6), (11, 7),
-                    (12, 7), (13, 8), (14, 8), (15, 9), (16, 9),
-                ]);
-                *force_start_n_dict.get(&room.players.len()).unwrap_or(&room.players.len())
+                // 计算参与游戏的玩家数量（排除观众组8）
+                let active_player_count = room.players.iter()
+                    .filter(|player_id| {
+                        if let Some(&group_id) = room.player_groups.get(*player_id) {
+                            group_id != 8 // 排除观众组
+                        } else {
+                            true // 未分组的玩家视为参与游戏
+                        }
+                    })
+                    .count();
+                
+                // 如果参与游戏的玩家数量<=1，返回0表示不需要强制开始
+                if active_player_count <= 1 {
+                    0
+                } else {
+                    let force_start_n_dict = HashMap::from([
+                        (2, 2), (3, 3), (4, 3), (5, 4), (6, 4),
+                        (7, 5), (8, 5), (9, 6), (10, 6), (11, 7),
+                        (12, 7), (13, 8), (14, 8), (15, 9), (16, 9),
+                    ]);
+                    let required = *force_start_n_dict.get(&active_player_count).unwrap_or(&active_player_count);
+                    required
+                }
             };
 
             Some(ReturnedRoomInfo {
@@ -786,6 +1532,11 @@ impl Actor for GameServer {
         ctx.run_interval(std::time::Duration::from_secs(60), |_act, ctx| {
             ctx.address().do_send(CleanupInactiveRooms);
         });
+        
+        // 启动断线用户清理任务：每10秒检查一次
+        ctx.run_interval(std::time::Duration::from_secs(10), |_act, ctx| {
+            ctx.address().do_send(CleanupDisconnectedPlayers);
+        });
     }
     fn stopped(&mut self, _ctx: &mut Self::Context) {
         println!("GameServer stopped");
@@ -796,18 +1547,26 @@ impl Handler<Connect> for GameServer {
     type Result = Result<(), String>;
 
     fn handle(&mut self, msg: Connect, _: &mut Context<Self>) -> Self::Result {
-        // 检查用户ID是否已经存在
-        if self.player_sessions.contains_key(&msg.user_id) {
+        // 检查是否是重连（用户在断线列表中）
+        let is_reconnecting = self.disconnected_players.contains_key(&msg.user_id);
+        
+        if is_reconnecting {
+            // 重连情况：移除断线记录，恢复会话
+            self.disconnected_players.remove(&msg.user_id);
+            println!("用户 {} 重连成功，恢复会话", msg.user_id);
+        } else if self.player_sessions.contains_key(&msg.user_id) {
+            // 用户已在线且不是重连情况
             return Err(format!("用户ID {} 已经在线", msg.user_id));
         }
         
-        println!("新连接注册会话: 用户ID={}, 用户名={}", msg.user_id, msg.username);
+        println!("{}连接注册会话: 用户ID={}, 用户名={}", 
+                if is_reconnecting { "重" } else { "新" }, msg.user_id, msg.username);
         
         // 注册会话和用户名
         self.player_sessions.insert(msg.user_id.clone(), msg.recipient);
         self.user_name_table.insert(msg.user_id.clone(), msg.username.clone());
         
-        // 自动加入全局聊天房间
+        // 自动加入全局聊天房间（如果还不在）
         if let Some(global_room) = self.rooms.get_mut("global") {
             if !global_room.players.contains(&msg.user_id) {
                 println!("将用户 {} 自动添加到全局房间", msg.user_id);
@@ -829,35 +1588,37 @@ impl Handler<Disconnect> for GameServer {
     type Result = ();
 
     fn handle(&mut self, msg: Disconnect, _: &mut Context<Self>) {
-        // 移除用户会话
+        println!("用户 {} 断开连接，开始30秒会话保留期", msg.player_id);
+        
+        // 移除会话连接，但保留其他信息
         self.player_sessions.remove(&msg.player_id);
-        let mut rooms_to_update = Vec::new();
         
-        // 从所有房间中移除用户（包括global房间，因为用户完全断开连接了）
-        for (room_id, room) in self.rooms.iter_mut() {
+        // 记录断线时间，开始30秒倒计时
+        let current_time = Self::current_timestamp();
+        self.disconnected_players.insert(msg.player_id.clone(), current_time);
+        
+        // 不立即从房间中移除玩家，保持其在房间状态
+        // 但需要通知其他玩家该用户断线了
+        for (room_id, room) in self.rooms.iter() {
             if room.players.contains(&msg.player_id) {
-                room.players.retain(|id| id != &msg.player_id);
-                room.force_start_players.retain(|id| id != &msg.player_id);
-                room.player_count -= 1;
-                rooms_to_update.push(room_id.clone());
+                // 向房间内其他玩家发送断线通知
+                for other_player_id in &room.players {
+                    if other_player_id != &msg.player_id {
+                        if let Some(recipient) = self.player_sessions.get(other_player_id) {
+                            let username = self.user_name_table.get(&msg.player_id)
+                                .cloned()
+                                .unwrap_or_else(|| "Unknown".to_string());
+                            let _ = recipient.do_send(UserMessage::Chat {
+                                room_id: room_id.clone(),
+                                sender_id: "system".to_string(),
+                                username: "系统".to_string(),
+                                content: format!("玩家 {} 断开连接，会话将保留30秒", username),
+                            });
+                        }
+                    }
+                }
             }
-            // 遍历所有分组，将该玩家移除
-            for group in room.groups.iter_mut() {
-                group.players.retain(|id| id != &msg.player_id);
-            }
-            // 同时移除分组映射
-            room.player_groups.remove(&msg.player_id);
         }
-
-        // 更新所有受影响的房间
-        for room_id in rooms_to_update {
-            if let Some(room_info) = self.get_room_info(&room_id) {
-                self.broadcast_room_info(&room_id, room_info);
-            }
-        }
-        
-        // 移除用户名表中的记录
-        self.user_name_table.remove(&msg.player_id);
     }
 }
 
@@ -1058,9 +1819,11 @@ impl Handler<UserMessage> for GameServer {
                         // 通知旧房间其他玩家该用户离开了
                         for other_player_id in &room.players {
                             if let Some(recipient) = self.player_sessions.get(other_player_id) {
-                                let _ = recipient.do_send(UserMessage::LeaveRoom {
-                                    room_id: existing_room_id.clone(),
-                                    player_id: player_id.clone(),
+                                let _ = recipient.do_send(UserMessage::Chat {
+                                    room_id: room_id.clone(),
+                                    sender_id: "system".to_string(),
+                                    username: "系统".to_string(),
+                                    content: format!("玩家 {} 离开房间", player_id),
                                 });
                             }
                         }
@@ -1133,29 +1896,71 @@ impl Handler<UserMessage> for GameServer {
                     
                     // 自动为新玩家分配组别（内联逻辑避免双重借用）
                     {
-                        // 找到人数最少的玩家组（0-7）
-                        let mut smallest_group_id = 0u8;
-                        let mut smallest_group_size = usize::MAX;
+                        let mut target_group_id = 8usize; // 默认分配到观众组
+                        let mut should_redirect_to_game = false;
                         
-                        for i in 0..8 { // 只考虑玩家组0-7
-                            if let Some(group) = room.groups.get(i) {
-                                if group.players.len() < smallest_group_size {
-                                    smallest_group_size = group.players.len();
-                                    smallest_group_id = i as u8;
+                        // 如果游戏未开始，尝试分配到玩家组
+                        if room.status == "waiting" {
+                            // 找到人数最少的玩家组（0-7）
+                            let mut smallest_group_id = 0usize;
+                            let mut smallest_group_size = usize::MAX;
+                            
+                            for i in 0..8 { // 只考虑玩家组0-7
+                                if let Some(group) = room.groups.get(i) {
+                                    if group.players.len() < smallest_group_size {
+                                        smallest_group_size = group.players.len();
+                                        smallest_group_id = i as usize;
+                                    }
                                 }
+                            }
+                            
+                            // 如果玩家组还有空位（假设每组最大2人），则分配到玩家组
+                            if smallest_group_size < 2 {
+                                target_group_id = smallest_group_id;
+                            }
+                        } else if room.status == "playing" {
+                            // 游戏进行中，检查玩家是否之前就在某个组中
+                            let mut found_previous_group = false;
+                            for (group_id, group) in room.groups.iter_mut().enumerate() {
+                                if group.players.contains(&player_id.to_string()) {
+                                    // 玩家之前就在这个组中，保持原有分配
+                                    target_group_id = group_id as usize;
+                                    found_previous_group = true;
+                                    should_redirect_to_game = true;
+                                    println!("游戏进行中，玩家 {} 恢复到原有组 {} ({})", player_id, group_id, group.name);
+                                    break;
+                                }
+                            }
+                            
+                            if !found_previous_group {
+                                // 新玩家，分配为观众
+                                target_group_id = 8;
+                                should_redirect_to_game = true;
+                                println!("游戏进行中，新玩家 {} 自动分配为观众并将跳转到游戏页面", player_id);
                             }
                         }
                         
-                        // 如果所有玩家组都满了（假设每组最大2人），则分配到观众组
-                        if smallest_group_size >= 2 {
-                            smallest_group_id = 8; // 观众组
+                        // 将玩家添加到选定的组（如果还没有在组中）
+                        if let Some(group) = room.groups.get_mut(target_group_id as usize) {
+                            if !group.players.contains(&player_id.to_string()) {
+                                group.players.push(player_id.to_string());
+                            }
+                            room.player_groups.insert(player_id.to_string(), target_group_id);
+                            
+                            if target_group_id == 8 {
+                                println!("玩家 {} 被分配为观众 (游戏状态: {})", player_id, room.status);
+                            } else {
+                                println!("玩家 {} 被自动分配到组 {} ({})", player_id, target_group_id, group.name);
+                            }
                         }
                         
-                        // 将玩家添加到选定的组
-                        if let Some(group) = room.groups.get_mut(smallest_group_id as usize) {
-                            group.players.push(player_id.to_string());
-                            room.player_groups.insert(player_id.to_string(), smallest_group_id);
-                            println!("玩家 {} 被自动分配到组 {} ({})", player_id, smallest_group_id, group.name);
+                        // 如果是游戏中加入，发送跳转消息
+                        if should_redirect_to_game {
+                            if let Some(recipient) = self.player_sessions.get(&player_id) {
+                                let _ = recipient.do_send(UserMessage::RedirectToGame {
+                                    room_id: room_id.clone(),
+                                });
+                            }
                         }
                     }
                     
@@ -1337,143 +2142,212 @@ impl Handler<UserMessage> for GameServer {
                         }
                         return;
                     }
-                    // 检查是否所有玩家都已准备
-                    if room.players.len() > 1 {
-                        // 检查是否达到强制开始所需人数
-                        if room.force_start_players.len() >= 
-                            *force_start_n_dict.get(&room.players.len()).unwrap_or(&room.players.len())
-                        {
-                            // 发送游戏开始事件
-                            for p_id in &room.players {
-                                if let Some(recipient) = self.player_sessions.get(p_id) {
-                                    let _ = recipient.do_send(UserMessage::StartGame {
-                                        room_id: room_id.clone(),
-                                    });
-                                    let _ = recipient.do_send(UserMessage::Chat {
-                                        room_id: room_id.clone(),
-                                        sender_id: "system".to_string(),
-                                        username: "系统".to_string(),
-                                        content: "游戏即将开始！".to_string(),
-                                    });
-                                }
+                    
+                    // 计算参与游戏的玩家数量（排除观众组8）
+                    let active_player_count = room.players.iter()
+                        .filter(|player_id| {
+                            if let Some(&group_id) = room.player_groups.get(*player_id) {
+                                group_id != 8 // 排除观众组
+                            } else {
+                                true // 未分组的玩家视为参与游戏
                             }
-                            
-                            // 更新房间状态为游戏中，启动回合制系统
-                            room.status = "playing".to_string();
-                            room.force_start_players.clear();
-                            room.game_turn = 1;
-                            room.turn_half = true;
-                            room.player_actions.clear();
-                            room.turn_start_time = Some(std::time::Instant::now());
-                            
-                            // 初始化游戏地图
-                            room.game_map = Some(GameMap::new(5, 5));
-                            println!("游戏地图已初始化");
-                            
-                            // 根据玩家的组别分配队伍ID
-                            let mut active_teams = Vec::new();
-                            for player_id in &room.players {
-                                if let Some(&group_id) = room.player_groups.get(player_id) {
-                                    // 组别0-7对应 team_0 到 team_7，观众组8不参与游戏
-                                    if group_id < 8 {
-                                        let team_id = format!("team_{}", group_id);
-                                        room.player_teams.insert(player_id.clone(), team_id.clone());
-                                        if !active_teams.contains(&team_id) {
-                                            active_teams.push(team_id.clone());
-                                        }
-                                        println!("队伍分配: {} -> {} (组别: {})", player_id, team_id, group_id);
-                                    } else {
-                                        println!("玩家 {} 是观众，不参与游戏 (组别: {})", player_id, group_id);
+                        })
+                        .count();
+                    
+                    // 如果参与游戏的玩家数量<=1，不允许强制开始
+                    if active_player_count <= 1 {
+                        if let Some(recipient) = self.player_sessions.get(&player_id) {
+                            let _ = recipient.do_send(
+                                UserMessage::Err("参与游戏的玩家数量不足，无法开始游戏".to_string())
+                            );
+                        }
+                        return;
+                    }
+                    
+                    // 检查是否达到强制开始所需人数（基于参与游戏的玩家数量）
+                    let required_force_start_count = *force_start_n_dict.get(&active_player_count).unwrap_or(&active_player_count);
+                    
+                    if room.force_start_players.len() >= required_force_start_count {
+                        // 发送游戏开始事件
+                        for p_id in &room.players {
+                            if let Some(recipient) = self.player_sessions.get(p_id) {
+                                let _ = recipient.do_send(UserMessage::StartGame {
+                                    room_id: room_id.clone(),
+                                });
+                                let _ = recipient.do_send(UserMessage::Chat {
+                                    room_id: room_id.clone(),
+                                    sender_id: "system".to_string(),
+                                    username: "系统".to_string(),
+                                    content: "游戏即将开始！".to_string(),
+                                });
+                            }
+                        }
+                        
+                        // 更新房间状态为游戏中，启动回合制系统
+                        room.status = "playing".to_string();
+                        room.force_start_players.clear();
+                        room.game_turn = 1;
+                        room.turn_half = true;
+                        room.player_actions.clear();
+                        room.turn_start_time = Some(std::time::Instant::now());
+                        
+                        // 根据玩家的组别分配队伍ID
+                        let mut active_teams = Vec::new();
+                        for player_id in &room.players {
+                            if let Some(&group_id) = room.player_groups.get(player_id) {
+                                // 组别0-7对应 team_0 到 team_7，观众组8不参与游戏
+                                if group_id < 8 {
+                                    let team_id = format!("team_{}", group_id);
+                                    room.player_teams.insert(player_id.clone(), team_id.clone());
+                                    if !active_teams.contains(&team_id) {
+                                        active_teams.push(team_id.clone());
                                     }
+                                    println!("队伍分配: {} -> {} (组别: {})", player_id, team_id, group_id);
                                 } else {
-                                    println!("警告: 玩家 {} 未分配组别，无法参与游戏", player_id);
+                                    println!("玩家 {} 是观众，不参与游戏 (组别: {})", player_id, group_id);
                                 }
+                            } else {
+                                println!("警告: 玩家 {} 未分配组别，无法参与游戏", player_id);
                             }
-                            
-                            // 为活跃的队伍设置王城位置
-                            if let Some(ref mut game_map) = room.game_map {
-                                // 预定义的王城位置（可以支持多个队伍）
-                                let general_positions = vec![
-                                    (0, 4), // 左下角
-                                    (4, 0), // 右上角
-                                    (0, 0), // 左上角
-                                    (4, 4), // 右下角
-                                    (2, 0), // 上中
-                                    (2, 4), // 下中
-                                    (0, 2), // 左中
-                                    (4, 2), // 右中
-                                ];
-                                
-                                for (i, team_id) in active_teams.iter().enumerate() {
-                                    if i < general_positions.len() {
-                                        let (x, y) = general_positions[i];
-                                        if let Err(e) = game_map.set_general(x, y, team_id.clone(), 2) {
-                                            println!("设置王城失败: {}", e);
-                                        } else {
-                                            println!("为队伍 {} 在位置 ({}, {}) 设置王城", team_id, x, y);
-                                        }
-                                    }
-                                }
-                                
-                                if active_teams.len() > general_positions.len() {
-                                    println!("警告: 队伍数量 ({}) 超过了预定义的王城位置数量 ({})", 
-                                             active_teams.len(), general_positions.len());
-                                }
-                            }
-                            
-                            // 向所有玩家发送初始地图数据
-                            for p_id in &room.players {
-                                if let Some(team_id) = room.player_teams.get(p_id) {
-                                    if let Some(ref game_map) = room.game_map {
-                                        let visible_tiles = game_map.get_visible_tiles(team_id);
-                                        let formatted_tiles: Vec<(usize, usize, String, u8, Option<String>)> = 
-                                            visible_tiles.into_iter().map(|(x, y, tile)| {
+                        }
+                        
+                        // 初始化游戏地图 - 根据参与游戏的玩家数量生成随机地图
+                        let mut game_map = GameMap::new_random(active_player_count);
+                        
+                        // 为活跃队伍分配王城
+                        game_map.assign_generals(&active_teams);
+                        
+                        room.game_map = Some(game_map);
+                        println!("游戏地图已生成，玩家数={}, 队伍数={}", active_player_count, active_teams.len());
+                        
+                        // 向所有玩家发送初始地图数据
+                        for p_id in &room.players {
+                            if let Some(ref game_map) = room.game_map {
+                                if let Some(&group_id) = room.player_groups.get(p_id) {
+                                    let formatted_tiles: Vec<(usize, usize, String, usize, Option<String>, bool)>;
+                                    
+                                    if group_id == 8 {
+                                        // 观众可以看到全图
+                                        formatted_tiles = game_map.get_all_tiles()
+                                            .into_iter().map(|(x, y, tile, has_vision)| {
                                                 let (tile_type, count, user_id) = match tile {
                                                     Tile::Wilderness => ("w".to_string(), 0, None),
                                                     Tile::Territory { count, user_id } => ("t".to_string(), count, Some(user_id)),
                                                     Tile::Mountain => ("m".to_string(), 0, None),
                                                     Tile::General { count, user_id } => ("g".to_string(), count, Some(user_id)),
                                                     Tile::Void => ("v".to_string(), 0, None),
+                                                    Tile::City { count, user_id, city_type } => {
+                                                        let type_str = match city_type {
+                                                            CityType::Settlement => "c_settlement",
+                                                            CityType::SmallCity => "c_smallcity",
+                                                            CityType::LargeCity => "c_largecity",
+                                                        };
+                                                        (type_str.to_string(), count, user_id)
+                                                    },
                                                 };
-                                                (x, y, tile_type, count, user_id)
+                                                (x, y, tile_type, count, user_id, has_vision)
                                             }).collect();
-                                        
-                                        if let Some(recipient) = self.player_sessions.get(p_id) {
-                                            let _ = recipient.do_send(UserMessage::MapUpdate {
-                                                room_id: room_id.clone(),
-                                                visible_tiles: formatted_tiles,
-                                            });
-                                        }
+                                    } else if let Some(team_id) = room.player_teams.get(p_id) {
+                                        // 玩家只能看到自己队伍的视野
+                                        formatted_tiles = game_map.get_visible_tiles(team_id)
+                                            .into_iter().map(|(x, y, tile, has_vision)| {
+                                                let (tile_type, count, user_id) = if has_vision {
+                                                    // 有视野时显示真实数据
+                                                    match tile {
+                                                        Tile::Wilderness => ("w".to_string(), 0, None),
+                                                        Tile::Territory { count, user_id } => ("t".to_string(), count, Some(user_id)),
+                                                        Tile::Mountain => ("m".to_string(), 0, None),
+                                                        Tile::General { count, user_id } => ("g".to_string(), count, Some(user_id)),
+                                                        Tile::Void => ("v".to_string(), 0, None),
+                                                        Tile::City { count, user_id, city_type } => {
+                                                            let type_str = match city_type {
+                                                                CityType::Settlement => "c_settlement",
+                                                                CityType::SmallCity => "c_smallcity",
+                                                                CityType::LargeCity => "c_largecity",
+                                                            };
+                                                            (type_str.to_string(), count, user_id)
+                                                        },
+                                                    }
+                                                } else {
+                                                    // 无视野时统一显示为未知地形，防止作弊
+                                                    ("unknown".to_string(), 0, None)
+                                                };
+                                                (x, y, tile_type, count, user_id, has_vision)
+                                            }).collect();
+                                    } else {
+                                        continue; // 跳过没有队伍分配的玩家
+                                    }
+                                    
+                                    // 计算所有玩家的兵力（包括不可见部分）
+                                    let team_powers = game_map.calculate_player_powers();
+                                    let player_powers: Vec<(String, usize, u32, String)> = room.player_groups.iter()
+                                        .filter_map(|(player_id, &group_id)| {
+                                            if group_id < 8 { // 只包括玩家组，排除观众
+                                                if let Some(team_id) = room.player_teams.get(player_id) {
+                                                    let total_power = team_powers.get(team_id).copied().unwrap_or(0);
+                                                    let username = self.user_name_table.get(player_id)
+                                                        .cloned()
+                                                        .unwrap_or_else(|| format!("玩家#{}", player_id.chars().take(8).collect::<String>()));
+                                                    let status = if total_power == 0 {
+                                                        "defeated".to_string()
+                                                    } else {
+                                                        "active".to_string()
+                                                    };
+                                                    Some((username, group_id, total_power, status))
+                                                } else {
+                                                    None
+                                                }
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .collect();
+                                    
+                                    if let Some(recipient) = self.player_sessions.get(p_id) {
+                                        let _ = recipient.do_send(UserMessage::MapUpdate {
+                                            room_id: room_id.clone(),
+                                            visible_tiles: formatted_tiles,
+                                            successful_move_sends: vec![],
+                                            player_powers,
+                                        });
                                     }
                                 }
                             }
-                            
-                            // 启动回合制系统：每500ms处理一个半回合
-                            let room_id_clone = room_id.clone();
-                            ctx.run_later(std::time::Duration::from_millis(500), move |_act, ctx| {
-                                ctx.address().do_send(GameTurnMessage {
-                                    room_id: room_id_clone,
-                                });
-                            });
-                            
-                            // 10秒后（20个回合）结束游戏
-                            
-                            let room_id_clone2 = room_id.clone();
-                            ctx.run_later(std::time::Duration::from_secs(60), move |_act, ctx| {
-                                ctx.address().do_send(EndGameMessage {
-                                    room_id: room_id_clone2,
-                                });
-                            });
                         }
+                        
+                        // 启动回合制系统：每500ms处理一个半回合
+                        let room_id_clone = room_id.clone();
+                        ctx.run_later(std::time::Duration::from_millis(500), move |_act, ctx| {
+                            ctx.address().do_send(GameTurnMessage {
+                                room_id: room_id_clone,
+                            });
+                        });
+                        
+                        // 10秒后（20个回合）结束游戏
+                        /*
+                        let room_id_clone2 = room_id.clone();
+                        ctx.run_later(std::time::Duration::from_secs(60), move |_act, ctx| {
+                            ctx.address().do_send(EndGameMessage {
+                                room_id: room_id_clone2,
+                            });
+                        });
+                         */
                         // 广播更新后的房间信息
                         if let Some(room_info) = self.get_room_info(&room_id) {
                             self.broadcast_room_info(&room_id, room_info);
                         }
                     } else {
+                        /* 
                         if let Some(recipient) = self.player_sessions.get(&player_id) {
                             let _ = recipient.do_send(
-                                UserMessage::Err("Not enough players to start".to_string())
+                                UserMessage::Err(format!("需要{}名玩家同意强制开始，当前只有{}名玩家同意", 
+                                                        required_force_start_count, room.force_start_players.len()))
                             );
+                        }
+                        */
+                        // 广播更新后的房间信息（即使人数不够也要更新前端）
+                        if let Some(room_info) = self.get_room_info(&room_id) {
+                            self.broadcast_room_info(&room_id, room_info);
                         }
                     }
                 }
@@ -1500,6 +2374,61 @@ impl Handler<UserMessage> for GameServer {
                                 UserMessage::Err("You have not requested to start".to_string())
                             );
                         }
+                    }
+                }
+            }
+            UserMessage::ShouldStart { room_id } => {
+                println!("处理 ShouldStart 请求，房间: {}", room_id);
+                // 更新房间活动时间
+                self.update_room_activity(&room_id);
+                
+                if let Some(room) = self.rooms.get(&room_id) {
+                    // 计算参与游戏的玩家数量（排除观众组8）
+                    let active_player_count = room.players.iter()
+                        .filter(|player_id| {
+                            if let Some(&group_id) = room.player_groups.get(*player_id) {
+                                group_id != 8 // 排除观众组
+                            } else {
+                                true // 未分组的玩家视为参与游戏
+                            }
+                        })
+                        .count();
+                    
+                    // 使用与ForceStart相同的逻辑计算所需人数
+                    let force_start_n_dict = HashMap::from([
+                        (2, 2),
+                        (3, 3),
+                        (4, 3),
+                        (5, 4),
+                        (6, 4),
+                        (7, 5),
+                        (8, 5),
+                        (9, 6),
+                        (10, 6),
+                        (11, 7),
+                        (12, 7),
+                        (13, 8),
+                        (14, 8),
+                        (15, 9),
+                        (16, 9),
+                    ]);
+                    
+                    let required_count = *force_start_n_dict.get(&active_player_count).unwrap_or(&active_player_count);
+                    let current_force_count = room.force_start_players.len();
+                    
+                    println!("房间 {} 参与游戏玩家数: {}, 当前force start人数: {}, 需要人数: {}", 
+                             room_id, active_player_count, current_force_count, required_count);
+                    
+                    if current_force_count >= required_count && active_player_count > 1 {
+                        println!("满足开始条件，启动游戏: {}", room_id);
+                        // 满足条件，开始游戏
+                        let start_message = UserMessage::StartGame {
+                            room_id: room_id.clone(),
+                        };
+                        self.handle(start_message, ctx);
+                    } else {
+                        println!("不满足开始条件，房间 {}: 当前{}/需要{}, 参与玩家: {}", 
+                                room_id, current_force_count, required_count, active_player_count);
                     }
                 }
             }
@@ -1847,6 +2776,109 @@ impl Handler<UserMessage> for GameServer {
                         if let Some(room_info) = self.get_room_info(&room_id) {
                             self.broadcast_room_info(&room_id, room_info);
                         }
+                        
+                        // 检查是否满足forcestart条件（当有人切换到观众组时）
+                        if let Some(room) = self.rooms.get_mut(&room_id) {
+                            if !room.force_start_players.is_empty() && room.status == "waiting" {
+                                // 计算参与游戏的玩家数量（排除观众组8）
+                                let active_player_count = room.players.iter()
+                                    .filter(|player_id| {
+                                        if let Some(&group_id) = room.player_groups.get(*player_id) {
+                                            group_id != 8 // 排除观众组
+                                        } else {
+                                            true // 未分组的玩家视为参与游戏
+                                        }
+                                    })
+                                    .count();
+                                    
+                                // forcestart所需人数规则
+                                let force_start_n_dict = HashMap::from([
+                                    (2, 2), (3, 3), (4, 3), (5, 4), (6, 4), (7, 5), (8, 5),
+                                    (9, 6), (10, 6), (11, 7), (12, 7), (13, 8), (14, 8), (15, 9), (16, 9),
+                                ]);
+                                
+                                if active_player_count >= 2 {
+                                    let required_force_start_count = *force_start_n_dict.get(&active_player_count).unwrap_or(&active_player_count);
+                                    
+                                    if room.force_start_players.len() >= required_force_start_count {
+                                        // 满足条件，开始游戏
+                                        println!("ChangeGroup触发forcestart: 活跃玩家数={}, 需要forcestart数={}, 实际forcestart数={}", 
+                                                active_player_count, required_force_start_count, room.force_start_players.len());
+                                        
+                                        for p_id in &room.players {
+                                            if let Some(recipient) = self.player_sessions.get(p_id) {
+                                                let _ = recipient.do_send(UserMessage::StartGame {
+                                                    room_id: room_id.clone(),
+                                                });
+                                                let _ = recipient.do_send(UserMessage::Chat {
+                                                    room_id: room_id.clone(),
+                                                    sender_id: "system".to_string(),
+                                                    username: "系统".to_string(),
+                                                    content: "游戏即将开始！".to_string(),
+                                                });
+                                            }
+                                        }
+                                        
+                                        // 更新房间状态为游戏中
+                                        room.status = "playing".to_string();
+                                        room.force_start_players.clear();
+                                        room.game_turn = 1;
+                                        room.turn_half = true;
+                                        room.player_actions.clear();
+                                        
+                                        // 创建游戏地图和分配队伍
+                                        let mut active_teams = Vec::new();
+                                        room.player_teams.clear(); // 清空现有的team分配
+                                        
+                                        for p_id in &room.players {
+                                            if let Some(&group_id) = room.player_groups.get(p_id) {
+                                                if group_id != 8 {
+                                                    let team_id = format!("team_{}", group_id);
+                                                    if !active_teams.contains(&team_id) {
+                                                        active_teams.push(team_id.clone());
+                                                    }
+                                                    // 将玩家分配到对应的队伍
+                                                    room.player_teams.insert(p_id.clone(), team_id);
+                                                }
+                                            }
+                                        }
+                                        
+                                        // 使用活跃玩家数量创建地图，而不是队伍数量
+                                        let mut game_map = GameMap::new_random(active_player_count);
+                                        game_map.assign_generals(&active_teams);
+                                        room.game_map = Some(game_map);
+                                        
+                                        println!("地图创建完成: 玩家数={}, 队伍数={}, 队伍列表={:?}", 
+                                                active_player_count, active_teams.len(), active_teams);
+                                        
+                                        // 发送初始地图
+                                        self.send_map_update_to_all_players(&room_id, vec![]);
+                                        
+                                        // 启动回合制系统：每500ms处理一个半回合
+                                        let room_id_clone = room_id.clone();
+                                        ctx.run_later(std::time::Duration::from_millis(500), move |_act, ctx| {
+                                            ctx.address().do_send(GameTurnMessage {
+                                                room_id: room_id_clone,
+                                            });
+                                        });
+                                    }
+                                } else {
+                                    // 参与游戏的玩家不足，清除forcestart
+                                    println!("参与游戏的玩家不足: {}, 清除forcestart", active_player_count);
+                                    room.force_start_players.clear();
+                                    for p_id in &room.players {
+                                        if let Some(recipient) = self.player_sessions.get(p_id) {
+                                            let _ = recipient.do_send(UserMessage::Chat {
+                                                room_id: room_id.clone(),
+                                                sender_id: "system".to_string(),
+                                                username: "系统".to_string(),
+                                                content: "参与游戏的玩家不足，已取消强制开始".to_string(),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     Err(error_msg) => {
                         if let Some(recipient) = self.player_sessions.get(&player_id) {
@@ -1884,9 +2916,9 @@ impl Handler<UserMessage> for GameServer {
                     }
                 }
             }
-            UserMessage::GameMove { room_id, player_id, from_x, from_y, to_x, to_y } => {
-                println!("收到GameMove消息: 房间={}, 玩家={}, ({},{}) -> ({},{})", 
-                         room_id, player_id, from_x, from_y, to_x, to_y);
+            UserMessage::GameMove { room_id, player_id, from_x, from_y, to_x, to_y, move_id, is_half_move } => {
+                println!("收到GameMove消息: 房间={}, 玩家={}, ({},{}) -> ({},{}), 半移动={}", 
+                         room_id, player_id, from_x, from_y, to_x, to_y, is_half_move);
                 
                 // 更新房间活动时间
                 self.update_room_activity(&room_id);
@@ -1924,38 +2956,129 @@ impl Handler<UserMessage> for GameServer {
                     
                     // 立即执行移动操作
                     if let Some(ref mut game_map) = room.game_map {
-                        match game_map.execute_move(from_x, from_y, to_x, to_y, &team_id) {
-                            Ok(Some(winner_team)) => {
-                                // 有玩家获胜，游戏结束
-                                println!("玩家 {} (队伍: {}) 成功执行移动并获胜: ({},{}) -> ({},{})", 
-                                         player_id, team_id, from_x, from_y, to_x, to_y);
-                                
-                                // 更新房间状态
-                                room.status = "finished".to_string();
-                                
-                                // 向所有玩家发送游戏胜利消息
-                                for p_id in &room.players {
-                                    if let Some(recipient) = self.player_sessions.get(p_id) {
-                                        let _ = recipient.do_send(UserMessage::GameWin {
-                                            room_id: room_id.clone(),
-                                            winner: winner_team.clone(),
-                                        });
+                        match game_map.execute_move(from_x, from_y, to_x, to_y, &team_id, is_half_move) {
+                            Ok((winner_team, defeated_team)) => {
+                                match (winner_team, defeated_team) {
+                                    (Some(winner), Some(defeated)) => {
+                                        // 有玩家获胜，游戏结束
+                                        println!("玩家 {} (队伍: {}) 成功执行移动并获胜: ({},{}) -> ({},{})", 
+                                                 player_id, team_id, from_x, from_y, to_x, to_y);
+                                        
+                                        // 更新房间状态
+                                        room.status = "finished".to_string();
+                                        
+                                        // 收集被击败的玩家
+                                        let mut defeated_players = Vec::new();
+                                        for (p_id, t_id) in &room.player_teams {
+                                            if t_id == &defeated {
+                                                defeated_players.push(p_id.clone());
+                                            }
+                                        }
+                                        
+                                        // 将被击败的玩家移动到观众组
+                                        for p_id in defeated_players {
+                                            room.player_groups.insert(p_id.clone(), 8);
+                                        }
+                                        
+                                        // 收集房间内的所有玩家用于消息发送
+                                        let room_players = room.players.clone();
+                                        
+                                        // 释放对room的可变借用
+                                        let _ = room;
+                                        
+                                        // 向所有玩家发送游戏胜利消息
+                                        for p_id in &room_players {
+                                            if let Some(recipient) = self.player_sessions.get(p_id) {
+                                                let _ = recipient.do_send(UserMessage::GameWin {
+                                                    room_id: room_id.clone(),
+                                                    winner: winner.clone(),
+                                                });
+                                            }
+                                        }
+                                        
+                                        // 向操作玩家发送成功确认
+                                        if let Some(recipient) = self.player_sessions.get(&player_id) {
+                                            let _ = recipient.do_send(UserMessage::Ok);
+                                        }
                                     }
-                                }
-                                
-                                // 向操作玩家发送成功确认
-                                if let Some(recipient) = self.player_sessions.get(&player_id) {
-                                    let _ = recipient.do_send(UserMessage::Ok);
-                                }
-                            }
-                            Ok(None) => {
-                                // 移动成功，游戏继续
-                                println!("玩家 {} (队伍: {}) 成功执行移动: ({},{}) -> ({},{})", 
-                                         player_id, team_id, from_x, from_y, to_x, to_y);
-                                
-                                // 向玩家发送成功确认
-                                if let Some(recipient) = self.player_sessions.get(&player_id) {
-                                    let _ = recipient.do_send(UserMessage::Ok);
+                                    (None, Some(defeated)) => {
+                                        // 有玩家被击败，但游戏继续
+                                        println!("玩家 {} (队伍: {}) 成功执行移动，击败了队伍 {}: ({},{}) -> ({},{})", 
+                                                 player_id, team_id, defeated, from_x, from_y, to_x, to_y);
+                                        
+                                        // 收集被击败的玩家
+                                        let mut defeated_players = Vec::new();
+                                        for (p_id, t_id) in &room.player_teams {
+                                            if t_id == &defeated {
+                                                defeated_players.push(p_id.clone());
+                                            }
+                                        }
+                                        
+                                        // 将被击败的玩家移动到观众组
+                                        for p_id in &defeated_players {
+                                            room.player_groups.insert(p_id.clone(), 8);
+                                        }
+                                        
+                                        // 收集房间内的所有玩家用于消息发送
+                                        let room_players = room.players.clone();
+                                        
+                                        // 释放对room的可变借用
+                                        let _ = room;
+                                        
+                                        // 向被击败的玩家发送系统消息
+                                        for p_id in &defeated_players {
+                                            if let Some(recipient) = self.player_sessions.get(p_id) {
+                                                let _ = recipient.do_send(UserMessage::Chat {
+                                                    room_id: room_id.clone(),
+                                                    sender_id: "system".to_string(),
+                                                    username: "系统".to_string(),
+                                                    content: format!("您已被 {} 击败，现在转为观众身份，拥有全局视野", team_id),
+                                                });
+                                            }
+                                        }
+                                        
+                                        // 向所有玩家发送玩家被击败消息
+                                        for p_id in &room_players {
+                                            if let Some(recipient) = self.player_sessions.get(p_id) {
+                                                let _ = recipient.do_send(UserMessage::PlayerEliminated {
+                                                    room_id: room_id.clone(),
+                                                    eliminated_player: defeated.clone(),
+                                                    eliminated_by: team_id.clone(),
+                                                });
+                                            }
+                                        }
+                                        
+                                        // 发送地图更新
+                                        self.send_map_update_to_all_players(&room_id, vec![move_id]);
+                                        
+                                        // 向操作玩家发送成功确认
+                                        if let Some(recipient) = self.player_sessions.get(&player_id) {
+                                            let _ = recipient.do_send(UserMessage::Ok);
+                                        }
+                                    }
+                                    (None, None) => {
+                                        // 移动成功，游戏继续，无玩家被击败
+                                        println!("玩家 {} (队伍: {}) 成功执行移动: ({},{}) -> ({},{})", 
+                                                 player_id, team_id, from_x, from_y, to_x, to_y);
+                                        
+                                        // 收集房间内的所有玩家用于消息发送
+                                        let _room_players = room.players.clone();
+                                        
+                                        // 释放对room的可变借用
+                                        let _ = room;
+                                        
+                                        // 发送地图更新
+                                        self.send_map_update_to_all_players(&room_id, vec![move_id]);
+                                        
+                                        // 向操作玩家发送成功确认
+                                        if let Some(recipient) = self.player_sessions.get(&player_id) {
+                                            let _ = recipient.do_send(UserMessage::Ok);
+                                        }
+                                    }
+                                    (Some(_), None) => {
+                                        // 这种情况不应该出现（有获胜者但无被击败者）
+                                        println!("警告: 不正常的游戏状态 - 有获胜者但无被击败者");
+                                    }
                                 }
                             }
                             Err(error_msg) => {
@@ -1975,38 +3098,19 @@ impl Handler<UserMessage> for GameServer {
                         }
                         return;
                     }
-                    
-                    // 向房间内所有玩家广播地图更新
-                    println!("广播地图更新给房间 {} 的所有玩家", room_id);
-                    for p_id in &room.players {
-                        if let Some(team_id) = room.player_teams.get(p_id) {
-                            if let Some(ref game_map) = room.game_map {
-                                let visible_tiles = game_map.get_visible_tiles(team_id);
-                                println!("玩家 {} (队伍: {}) 可见格子数: {}", p_id, team_id, visible_tiles.len());
-                                let formatted_tiles: Vec<(usize, usize, String, u8, Option<String>)> = 
-                                    visible_tiles.into_iter().map(|(x, y, tile)| {
-                                        let (tile_type, count, user_id) = match tile {
-                                            Tile::Wilderness => ("w".to_string(), 0, None),
-                                            Tile::Territory { count, user_id } => ("t".to_string(), count, Some(user_id)),
-                                            Tile::Mountain => ("m".to_string(), 0, None),
-                                            Tile::General { count, user_id } => ("g".to_string(), count, Some(user_id)),
-                                            Tile::Void => ("v".to_string(), 0, None),
-                                        };
-                                        (x, y, tile_type, count, user_id)
-                                    }).collect();
-                                
-                                if let Some(recipient) = self.player_sessions.get(p_id) {
-                                    let _ = recipient.do_send(UserMessage::MapUpdate {
-                                        room_id: room_id.clone(),
-                                        visible_tiles: formatted_tiles,
-                                    });
-                                }
-                            }
-                        }
+                } else {
+                    if let Some(recipient) = self.player_sessions.get(&player_id) {
+                        let _ = recipient.do_send(UserMessage::Err("房间不存在".to_string()));
                     }
+                    return;
                 }
+                
+                // 使用方法广播地图更新
+                self.send_map_update_to_all_players(&room_id, vec![move_id]);
             }
-            _ => {}
+            _ => {
+                // 其他消息类型暂不处理
+            }
         }
     }
 }
@@ -2020,6 +3124,7 @@ pub struct GlobalUserSession {
     user_id: String,
     username: String,
     addr: Addr<GameServer>,
+    successful_move_sends: Vec<usize>,
 }
 
 impl GlobalUserSession {
@@ -2028,6 +3133,7 @@ impl GlobalUserSession {
             user_id,
             username,
             addr,
+            successful_move_sends: Vec::new(),
         }
     }
 
@@ -2189,6 +3295,12 @@ impl Handler<UserMessage> for GlobalUserSession {
                 });
                 ctx.text(ok_json.to_string());
             }
+            UserMessage::MoveOk{} => {
+                let move_ok_json = serde_json::json!({
+                    "type": "move_ok",
+                });
+                ctx.text(move_ok_json.to_string());
+            }
             UserMessage::Err(err_msg) => {
                 let err_json = serde_json::json!({
                     "type": "error",
@@ -2200,6 +3312,13 @@ impl Handler<UserMessage> for GlobalUserSession {
                 let redirect_json = serde_json::json!({
                     "type": "redirect_to_home",
                     "reason": reason,
+                });
+                ctx.text(redirect_json.to_string());
+            }
+            UserMessage::RedirectToGame { room_id } => {
+                let redirect_json = serde_json::json!({
+                    "type": "redirect_to_game",
+                    "room_id": room_id,
                 });
                 ctx.text(redirect_json.to_string());
             }
@@ -2230,11 +3349,13 @@ impl Handler<UserMessage> for GlobalUserSession {
                 println!("GlobalUserSession 发送回合更新消息: {}", turn_update_json);
                 ctx.text(turn_update_json.to_string());
             }
-            UserMessage::MapUpdate { room_id, visible_tiles } => {
+            UserMessage::MapUpdate { room_id, visible_tiles, successful_move_sends, player_powers } => {
                 let map_update_json = serde_json::json!({
                     "type": "map_update",
                     "room_id": room_id,
                     "visible_tiles": visible_tiles,
+                    "successful_move_sends": successful_move_sends,
+                    "player_powers": player_powers,
                 });
                 println!("GlobalUserSession 发送地图更新消息: {}", map_update_json);
                 ctx.text(map_update_json.to_string());
@@ -2247,6 +3368,16 @@ impl Handler<UserMessage> for GlobalUserSession {
                 });
                 println!("GlobalUserSession 发送游戏胜利消息: {}", game_win_json);
                 ctx.text(game_win_json.to_string());
+            }
+            UserMessage::PlayerEliminated { room_id, eliminated_player, eliminated_by } => {
+                let eliminated_json = serde_json::json!({
+                    "type": "player_eliminated",
+                    "room_id": room_id,
+                    "eliminated_player": eliminated_player,
+                    "eliminated_by": eliminated_by,
+                });
+                println!("GlobalUserSession 发送玩家被击败消息: {}", eliminated_json);
+                ctx.text(eliminated_json.to_string());
             }
             _ => {}
         }
@@ -2368,6 +3499,14 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for GlobalUserSession
                                     });
                                 }
                             }
+                            "should_start" => {
+                                if let Some(room_id) = json["room_id"].as_str() {
+                                    println!("收到should_start请求，房间: {}", room_id);
+                                    self.addr.do_send(UserMessage::ShouldStart {
+                                        room_id: room_id.to_string(),
+                                    });
+                                }
+                            }
                             "game_action" => {
                                 if let (Some(room_id), Some(action)) = (
                                     json["room_id"].as_str(),
@@ -2387,16 +3526,18 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for GlobalUserSession
                                     Some(from_x),
                                     Some(from_y),
                                     Some(to_x),
-                                    Some(to_y)
+                                    Some(to_y),
+                                    Some(move_id)
                                 ) = (
                                     json["room_id"].as_str(),
                                     json["from_x"].as_u64(),
                                     json["from_y"].as_u64(),
                                     json["to_x"].as_u64(),
-                                    json["to_y"].as_u64()
+                                    json["to_y"].as_u64(),
+                                    json["move_id"].as_u64(), // 解析 move_id 但暂不使用
                                 ) {
-                                    println!("向GameServer发送GameMove: room_id={}, from=({},{}), to=({},{})", 
-                                             room_id, from_x, from_y, to_x, to_y);
+                                    println!("向GameServer发送GameMove: room_id={}, from=({},{}), to=({},{}), move_id={}", 
+                                             room_id, from_x, from_y, to_x, to_y,move_id);
                                     self.addr.do_send(UserMessage::GameMove {
                                         room_id: room_id.to_string(),
                                         player_id: self.user_id.clone(),
@@ -2404,6 +3545,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for GlobalUserSession
                                         from_y: from_y as usize,
                                         to_x: to_x as usize,
                                         to_y: to_y as usize,
+                                        move_id: move_id as usize,
+                                        is_half_move: json["is_half_move"].as_bool().unwrap_or(false),
                                     });
                                 } else {
                                     println!("game_move消息解析失败: room_id={:?}, from_x={:?}, from_y={:?}, to_x={:?}, to_y={:?}",
@@ -2454,7 +3597,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for GlobalUserSession
                                     self.addr.do_send(UserMessage::ChangeGroup {
                                         room_id: room_id.to_string(),
                                         player_id: self.user_id.clone(),
-                                        target_group_id: target_group_id as u8,
+                                        target_group_id: target_group_id as usize,
                                     });
                                 }
                             }
@@ -2529,11 +3672,16 @@ impl Handler<GameTurnMessage> for GameServer {
             // 处理回合逻辑
             if let Some(ref mut game_map) = room.game_map {
                 // 1. 首先处理兵力增长（每个半回合都要检查）
+                // 每半秒（每个回合的下半秒）所有玩家王城兵力增加1
                 if room.turn_half {
-                    // 每半秒（每个回合的下半秒）所有玩家王城兵力增加1
                     println!("回合 {} - 增加王城兵力", room.game_turn);
                     game_map.increase_general_troops();
                 }
+                
+                // 增加城市兵力（每个半回合都检查，根据城市类型不同的增长速度）
+                let total_ticks = room.game_turn * 2 + if room.turn_half { 1 } else { 0 };
+                println!("回合 {} - 检查城市兵力增长，总tick数: {}", room.game_turn, total_ticks);
+                game_map.increase_city_troops(total_ticks.into());
                 
                 // 每25个回合（25turn）所有玩家所有t和g兵力增加1
                 if room.game_turn % 25 == 0 && room.turn_half {
@@ -2561,27 +3709,118 @@ impl Handler<GameTurnMessage> for GameServer {
                     }
                 }
                 
-                // 3. 向所有玩家广播地图更新和回合信息
-                for player_id in &room.players {
-                    if let Some(team_id) = room.player_teams.get(player_id) {
-                        let visible_tiles = game_map.get_visible_tiles(team_id);
-                        let formatted_tiles: Vec<(usize, usize, String, u8, Option<String>)> = 
-                            visible_tiles.into_iter().map(|(x, y, tile)| {
-                                let (tile_type, count, user_id) = match tile {
-                                    Tile::Wilderness => ("w".to_string(), 0, None),
-                                    Tile::Territory { count, user_id } => ("t".to_string(), count, Some(user_id)),
-                                    Tile::Mountain => ("m".to_string(), 0, None),
-                                    Tile::General { count, user_id } => ("g".to_string(), count, Some(user_id)),
-                                    Tile::Void => ("v".to_string(), 0, None),
-                                };
-                                (x, y, tile_type, count, user_id)
-                            }).collect();
+                // 3. 检查单人胜利条件
+                if let Some(ref game_map) = room.game_map {
+                    let active_teams = game_map.get_active_teams();
+                    if active_teams.len() == 1 {
+                        // 只剩一个活跃队伍，游戏结束
+                        let winner_team = active_teams[0].clone();
+                        room.status = "ended".to_string();
                         
-                        if let Some(recipient) = self.player_sessions.get(player_id) {
-                            let _ = recipient.do_send(UserMessage::MapUpdate {
-                                room_id: msg.room_id.clone(),
-                                visible_tiles: formatted_tiles,
-                            });
+                        // 向所有玩家发送胜利消息
+                        for player_id in &room.players {
+                            if let Some(recipient) = self.player_sessions.get(player_id) {
+                                let _ = recipient.do_send(UserMessage::GameWin {
+                                    room_id: msg.room_id.clone(),
+                                    winner: winner_team.clone(),
+                                });
+                            }
+                        }
+                        return; // 游戏结束，不再继续处理回合
+                    }
+                }
+                
+                // 4. 向所有玩家广播地图更新和回合信息
+                for player_id in &room.players {
+                    if let Some(ref game_map) = room.game_map {
+                        if let Some(&group_id) = room.player_groups.get(player_id) {
+                            let formatted_tiles: Vec<(usize, usize, String, usize, Option<String>, bool)>;
+                            
+                            if group_id == 8 {
+                                // 观众可以看到全图
+                                formatted_tiles = game_map.get_all_tiles()
+                                    .into_iter().map(|(x, y, tile, has_vision)| {
+                                        let (tile_type, count, user_id) = match tile {
+                                            Tile::Wilderness => ("w".to_string(), 0, None),
+                                            Tile::Territory { count, user_id } => ("t".to_string(), count, Some(user_id)),
+                                            Tile::Mountain => ("m".to_string(), 0, None),
+                                            Tile::General { count, user_id } => ("g".to_string(), count, Some(user_id)),
+                                            Tile::Void => ("v".to_string(), 0, None),
+                                            Tile::City { count, user_id, city_type } => {
+                                                let type_str = match city_type {
+                                                    CityType::Settlement => "c_settlement",
+                                                    CityType::SmallCity => "c_smallcity",
+                                                    CityType::LargeCity => "c_largecity",
+                                                };
+                                                (type_str.to_string(), count, user_id)
+                                            },
+                                        };
+                                        (x, y, tile_type, count, user_id, has_vision)
+                                    }).collect();
+                            } else if let Some(team_id) = room.player_teams.get(player_id) {
+                                // 玩家只能看到自己队伍的视野
+                                formatted_tiles = game_map.get_visible_tiles(team_id)
+                                    .into_iter().map(|(x, y, tile, has_vision)| {
+                                        let (tile_type, count, user_id) = if has_vision {
+                                            // 有视野时显示真实数据
+                                            match tile {
+                                                Tile::Wilderness => ("w".to_string(), 0, None),
+                                                Tile::Territory { count, user_id } => ("t".to_string(), count, Some(user_id)),
+                                                Tile::Mountain => ("m".to_string(), 0, None),
+                                                Tile::General { count, user_id } => ("g".to_string(), count, Some(user_id)),
+                                                Tile::Void => ("v".to_string(), 0, None),
+                                                Tile::City { count, user_id, city_type } => {
+                                                    let type_str = match city_type {
+                                                        CityType::Settlement => "c_settlement",
+                                                        CityType::SmallCity => "c_smallcity",
+                                                        CityType::LargeCity => "c_largecity",
+                                                    };
+                                                    (type_str.to_string(), count, user_id)
+                                                },
+                                            }
+                                        } else {
+                                            // 无视野时统一显示为未知地形，防止作弊
+                                            ("unknown".to_string(), 0, None)
+                                        };
+                                        (x, y, tile_type, count, user_id, has_vision)
+                                    }).collect();
+                            } else {
+                                continue; // 跳过没有队伍分配的玩家
+                            }
+                            
+                            // 计算所有玩家的兵力（包括不可见部分）
+                            let team_powers = game_map.calculate_player_powers();
+                            let player_powers: Vec<(String, usize, u32, String)> = room.player_groups.iter()
+                                .filter_map(|(pid, &group_id)| {
+                                    if group_id < 8 { // 只包括玩家组，排除观众
+                                        if let Some(team_id) = room.player_teams.get(pid) {
+                                            let total_power = team_powers.get(team_id).copied().unwrap_or(0);
+                                            let username = self.user_name_table.get(pid)
+                                                .cloned()
+                                                .unwrap_or_else(|| format!("玩家#{}", pid.chars().take(8).collect::<String>()));
+                                            let status = if total_power == 0 {
+                                                "defeated".to_string()
+                                            } else {
+                                                "active".to_string()
+                                            };
+                                            Some((username, group_id, total_power, status))
+                                        } else {
+                                            None
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .collect();
+                            
+                            if let Some(recipient) = self.player_sessions.get(player_id) {
+                                let _ = recipient.do_send(UserMessage::MapUpdate {
+                                    room_id: msg.room_id.clone(),
+                                    visible_tiles: formatted_tiles,
+                                    successful_move_sends: vec![],
+                                    player_powers,
+                                });
+                            }
                         }
                     }
                 }
@@ -2698,7 +3937,7 @@ impl Handler<CleanupInactiveRooms> for GameServer {
                     room.players.retain(|id| id != player_id);
                     room.force_start_players.retain(|id| id != player_id);
                     room.player_count = room.players.len();
-                    self.user_name_table.remove(player_id);
+                    // 不要在这里删除用户名，因为玩家可能在其他房间中
                     println!("清理已断开连接的玩家: {} 从房间: {}", player_id, room_id);
                 }
                 rooms_to_update.push(room_id.clone());
@@ -2754,6 +3993,130 @@ impl Handler<CleanupInactiveRooms> for GameServer {
         // 移除空的房间踢出记录
         for room_id in rooms_to_clean {
             self.kicked_players.remove(&room_id);
+        }
+    }
+}
+
+impl Handler<CleanupDisconnectedPlayers> for GameServer {
+    type Result = ();
+
+    fn handle(&mut self, _msg: CleanupDisconnectedPlayers, _: &mut Context<Self>) {
+        let current_time = Self::current_timestamp();
+        let session_timeout = 30; // 30秒会话保留时间
+        
+        let mut players_to_remove = Vec::new();
+        
+        // 检查所有断线玩家
+        for (player_id, disconnect_time) in &self.disconnected_players {
+            if current_time - disconnect_time > session_timeout {
+                players_to_remove.push(player_id.clone());
+            }
+        }
+        
+        // 彻底移除过期的断线玩家
+        for player_id in players_to_remove {
+            println!("断线玩家 {} 会话过期，彻底移除", player_id);
+            
+            // 从断线列表中移除
+            self.disconnected_players.remove(&player_id);
+            
+            // 从所有房间中移除
+            let mut rooms_to_update = Vec::new();
+            for (room_id, room) in self.rooms.iter_mut() {
+                if room.players.contains(&player_id) {
+                    room.players.retain(|id| id != &player_id);
+                    room.force_start_players.retain(|id| id != &player_id);
+                    room.player_count -= 1;
+                    rooms_to_update.push(room_id.clone());
+                    
+                    // 通知房间内其他玩家
+                    for other_player_id in &room.players {
+                        if let Some(recipient) = self.player_sessions.get(other_player_id) {
+                            let username = self.user_name_table.get(&player_id)
+                                .cloned()
+                                .unwrap_or_else(|| "Unknown".to_string());
+                            let _ = recipient.do_send(UserMessage::Chat {
+                                room_id: room_id.clone(),
+                                sender_id: "system".to_string(),
+                                username: "系统".to_string(),
+                                content: format!("玩家 {} 会话过期，已从房间移除", username),
+                            });
+                        }
+                    }
+                }
+                
+                // 从分组中移除
+                for group in room.groups.iter_mut() {
+                    group.players.retain(|id| id != &player_id);
+                }
+                room.player_groups.remove(&player_id);
+            }
+            
+            // 更新受影响的房间
+            for room_id in rooms_to_update {
+                // 检查游戏是否仍在进行且是否需要检查胜利条件
+                let should_check_victory = if let Some(room) = self.rooms.get(&room_id) {
+                    room.status == "playing" && room.game_map.is_some()
+                } else {
+                    false
+                };
+                
+                if should_check_victory {
+                    // 获取活跃队伍信息
+                    let active_teams = if let Some(room) = self.rooms.get(&room_id) {
+                        if let Some(ref game_map) = room.game_map {
+                            game_map.get_active_teams()
+                        } else {
+                            Vec::new()
+                        }
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    if active_teams.len() == 1 {
+                        // 只剩一个活跃队伍，游戏结束
+                        let winner_team = active_teams[0].clone();
+                        
+                        // 获取房间玩家列表用于发送消息
+                        let room_players = if let Some(room) = self.rooms.get(&room_id) {
+                            room.players.clone()
+                        } else {
+                            Vec::new()
+                        };
+                        
+                        // 更新房间状态
+                        if let Some(room_mut) = self.rooms.get_mut(&room_id) {
+                            room_mut.status = "ended".to_string();
+                        }
+                        
+                        // 向所有玩家发送胜利消息
+                        for player_id in &room_players {
+                            if let Some(recipient) = self.player_sessions.get(player_id) {
+                                let _ = recipient.do_send(UserMessage::GameWin {
+                                    room_id: room_id.clone(),
+                                    winner: winner_team.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+                
+                if let Some(room_info) = self.get_room_info(&room_id) {
+                    self.broadcast_room_info(&room_id, room_info);
+                }
+            }
+            
+            // 从用户名表中移除（只有当玩家不在任何房间时才移除）
+            let mut is_in_any_room = false;
+            for room in self.rooms.values() {
+                if room.players.contains(&player_id) {
+                    is_in_any_room = true;
+                    break;
+                }
+            }
+            if !is_in_any_room {
+                self.user_name_table.remove(&player_id);
+            }
         }
     }
 }

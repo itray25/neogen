@@ -34,8 +34,7 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room }) => {
   const navigate = useNavigate();
   const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
 
-  const isJoinable =
-    room.player_count < room.max_players && room.status !== "playing";
+  const isJoinable = room.player_count < room.max_players; // 移除 status !== "playing" 的限制
   const canStart = room.player_count >= room.required_to_start;
 
   const handleJoin = (password?: string) => {
@@ -156,14 +155,14 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room }) => {
             {/* 加入按钮 */}
             <Button
               size="sm"
-              colorPalette="blue"
+              colorPalette={room.status === "playing" ? "green" : "blue"}
               variant={isJoinable ? "solid" : "ghost"}
               disabled={!isJoinable}
               onClick={handleJoinClick}
               w="100%"
             >
               {room.status === "playing"
-                ? "游戏进行中"
+                ? "观战游戏"
                 : !isJoinable
                   ? "房间已满"
                   : "加入房间"}
